@@ -12,3 +12,5 @@ imageio-ffmpeg
 torch
 torchaudio
 flask
+fastapi
+uvicorn`
