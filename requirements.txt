@@ -13,4 +13,4 @@ torch
 torchaudio
 flask
 fastapi
-uvicorn
+gunicorn
