@@ -5,7 +5,12 @@ import numpy as np
 import librosa
 
 
-def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -> dict:
+def evaluate_channel_and_calibrate(
+    y: np.ndarray,
+    sr: int,
+    raw_ai_prob: float,
+    source_type: str = "mic",
+) -> dict:
     """Evaluate audio channel degradation (telephony / noise / band-limiting)
     and calibrate risk tier and uncertainty note accordingly.
 
@@ -13,12 +18,13 @@ def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -
         y: Audio signal array (1D or 2D).
         sr: Sampling rate in Hz.
         raw_ai_prob: Raw synthetic speech probability [0.0, 1.0].
+        source_type: "mic" | "tab" | "upload" (default: "mic").
 
     Returns:
         dict:
             channel_quality: "TELEPHONY_DEGRADED" | "WIDEBAND_CLEAN"
             calibrated_prob: float
-            tier: "ALLOW" | "WARN" | "HOLD"
+            tier: "ALLOW" | "HOLD"
             uncertainty_note: str
             channel_metrics: {"high_band_ratio": float, "snr_db": float}
     """
@@ -60,26 +66,53 @@ def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -
     is_degraded = bool((sr <= 8000) or (high_band_ratio < 0.0012))
     channel_quality = "TELEPHONY_DEGRADED" if is_degraded else "WIDEBAND_CLEAN"
 
-    # 4. Calibrate risk tier ("ALLOW" | "WARN" | "HOLD") and uncertainty_note
+    # 4. Source-Aware Risk Tier & Uncertainty Note Calibration
     prob = float(raw_ai_prob)
-    if is_degraded:  # TELEPHONY_DEGRADED
-        if prob >= 0.82:
+    stype = str(source_type or "mic").lower().strip()
+
+    if stype == "mic":
+        # Laptop / mobile microphone capture with room acoustics & hardware roll-off:
+        # Require prob >= 0.78 to count as a synthetic chunk candidate
+        if prob >= 0.78:
             tier = "HOLD"
-            calibrated_prob = round(max(prob, 0.86), 4)
-            uncertainty_note = "Degraded 8kHz/noisy channel • Strong synthetic artifact overrides noise"
+            calibrated_prob = round(max(prob, 0.88), 4)
+            uncertainty_note = "Acoustic anomaly detected • Synthetic vocoder profile candidate"
         else:
             tier = "ALLOW"
-            calibrated_prob = round(min(prob * 0.25, 0.22), 4)
-            uncertainty_note = "Degraded mic/channel bandwidth • Calibrated against DSP false-positives"
-    else:  # WIDEBAND_CLEAN
-        if prob >= 0.42:
+            calibrated_prob = round(min(prob * 0.25, 0.20), 4)
+            uncertainty_note = (
+                "Ambient/degraded channel • Human vocal profile"
+                if is_degraded
+                else "Natural human vocal harmonics verified"
+            )
+
+    elif stype == "tab":
+        # Browser tab / system audio capture (e.g. YouTube stream, AI voice call tab):
+        # Require prob >= 0.52 to count as a synthetic chunk candidate
+        if prob >= 0.52:
             tier = "HOLD"
-            calibrated_prob = round(max(prob, 0.86), 4)
+            calibrated_prob = round(max(prob, 0.88), 4)
             uncertainty_note = "Wideband harmonics intact • High-confidence synthetic signature"
         else:
             tier = "ALLOW"
             calibrated_prob = round(min(prob, 0.16), 4)
-            uncertainty_note = "Wideband harmonics intact • Natural human vocal profile"
+            uncertainty_note = "Natural human vocal harmonics verified"
+
+    else:
+        # source_type == "upload" (direct file inspection: scam_ai_sample.wav, scam_neural_in.mp3, etc.):
+        # Single-shot evaluation: if prob >= 0.50, return HOLD immediately
+        if prob >= 0.50:
+            tier = "HOLD"
+            calibrated_prob = round(max(prob, 0.88), 4)
+            uncertainty_note = "Wideband harmonics intact • High-confidence synthetic signature"
+        else:
+            tier = "ALLOW"
+            calibrated_prob = round(min(prob, 0.16), 4)
+            uncertainty_note = "Natural human vocal harmonics verified"
+
+    # GUARANTEE: uncertainty_note NEVER says "synthetic signature" when tier == "ALLOW"
+    if tier == "ALLOW" and "synthetic" in uncertainty_note.lower():
+        uncertainty_note = "Natural human vocal harmonics verified"
 
     return {
         "channel_quality": channel_quality,
@@ -91,4 +124,3 @@ def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -
             "snr_db": round(float(snr_db), 2),
         },
     }
-

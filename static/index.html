@@ -3728,6 +3728,11 @@
       var callTier = (data && (data.calibrated_tier || data.tier) ? (data.calibrated_tier || data.tier) : '').toUpperCase();
       var isSafeCall = (callTier !== 'HOLD' && overallRisk < 50);
 
+      // Whenever tier !== "HOLD", automatically run resetSafeGreenUI() to clear all red styles
+      if (callTier !== 'HOLD') {
+        resetSafeGreenUI();
+      }
+
       if (!isSafeCall && (overallRisk >= 70 || manualBankingLock)) {
         emergencyActive = true;
         if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-crimson)] leading-none animate-pulse';
@@ -4191,13 +4196,19 @@
           fd.append('session_id', liveSessionId);
           fd.append('mode', 'live');
         }
+        fd.append('source_type', selectedAudioSource || 'mic');
         var resp = await fetch(API_BASE + '/api/score', {
           method: 'POST',
           body: fd
         });
-        if (resp.ok) {
-          var data = await resp.json();
-          if (!data.error && callActive && !isManualSimulation) {
+        if (resp && resp.ok) {
+          var data;
+          try {
+            data = await resp.json();
+          } catch (jsonErr) {
+            data = null;
+          }
+          if (data && !data.error && callActive && !isManualSimulation) {
             updateCombinedRiskUI(data);
           }
         }
@@ -4217,6 +4228,8 @@
 
       var fd = new FormData();
       fd.append('file', file);
+      fd.append('source_type', 'upload');
+      fd.append('mode', 'upload');
 
       try {
         // Reset engine state so previous session does not bleed into file analysis
@@ -4226,7 +4239,19 @@
           method: 'POST',
           body: fd
         });
-        var data = await resp.json();
+        if (!resp || !resp.ok) {
+          alert("File inspection notice: HTTP " + (resp ? resp.status : "error"));
+          if (uploadLabel) uploadLabel.textContent = "Upload Voice Note to Inspect";
+          return;
+        }
+        var data;
+        try {
+          data = await resp.json();
+        } catch (jsonErr) {
+          alert("Error parsing analysis result");
+          if (uploadLabel) uploadLabel.textContent = "Upload Voice Note to Inspect";
+          return;
+        }
         if (data.error) {
           alert("Analysis notice: " + data.error);
           if (uploadLabel) uploadLabel.textContent = "Upload Voice Note to Inspect";
@@ -4492,9 +4517,10 @@
     }
 
     class WavStreamCapture {
-      constructor(stream, onChunk) {
+      constructor(stream, onChunk, sourceType) {
         this.stream = stream;
         this.onChunk = onChunk;
+        this.sourceType = sourceType || (typeof selectedAudioSource !== 'undefined' ? selectedAudioSource : 'mic');
         this.audioCtx = null;
         this.sourceNode = null;
         this.processor = null;
@@ -4503,12 +4529,41 @@
         this.accumulatedCount = 0;
         this.targetChunkSamples = 24000; // 1.5 seconds at 16000 Hz
         this.active = false;
+        this.discardSamples = 2400; // Discard first 150ms hardware click buffer (2400 samples at 16kHz)
       }
 
-      async start() {
+      async start(sourceType) {
+        if (sourceType) this.sourceType = sourceType;
         liveSessionId = "sess_" + Date.now();
         fetch('/api/reset', { method: 'POST' }).catch(function () { });
         resetSafeGreenUI();
+
+        // When sourceType === "mic", request raw unprocessed audio to avoid browser comb-filtering
+        if (this.sourceType === "mic") {
+          try {
+            if (this.stream) {
+              try { this.stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { }
+            }
+            this.stream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 1
+              }
+            });
+            liveAudioStream = this.stream;
+          } catch (e) {
+            console.warn("Raw audio constraints rejected, falling back to { audio: true }:", e);
+            try {
+              this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              liveAudioStream = this.stream;
+            } catch (err2) {
+              console.error("Mic access failed:", err2);
+            }
+          }
+        }
+
         var AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) throw new Error("AudioContext not supported");
 
@@ -4519,6 +4574,7 @@
           audioContext = this.audioCtx;
         }
 
+        // Ensure await audioCtx.resume() runs before recording starts
         if (this.audioCtx.state === 'suspended') {
           await this.audioCtx.resume();
         }
@@ -4539,6 +4595,7 @@
 
         var self = this;
         var inRate = this.audioCtx.sampleRate;
+        this.discardSamples = 2400; // 150ms at 16kHz to drop hardware startup transient
 
         this.processor.onaudioprocess = function (e) {
           if (!self.active) return;
@@ -4555,6 +4612,18 @@
           updateLiveLevelMeter(rmsDb);
 
           var dsSamples = downsampleBuffer(channelData, inRate, 16000);
+
+          // Discard initial 150ms click buffer
+          if (self.discardSamples > 0) {
+            if (dsSamples.length <= self.discardSamples) {
+              self.discardSamples -= dsSamples.length;
+              return;
+            } else {
+              dsSamples = dsSamples.subarray(self.discardSamples);
+              self.discardSamples = 0;
+            }
+          }
+
           self.accumulatedSamples.push(dsSamples);
           self.accumulatedCount += dsSamples.length;
 
@@ -4574,7 +4643,7 @@
 
             var wavBlob = encodeWav(chunk, 16000);
             if (typeof self.onChunk === 'function') {
-              self.onChunk(wavBlob);
+              self.onChunk(wavBlob, self.sourceType);
             }
           }
         };
@@ -4615,9 +4684,11 @@
     }
     window.WavStreamCapture = WavStreamCapture;
 
-    async function handleLiveWavChunk(blob) {
+    async function handleLiveWavChunk(blob, sourceType) {
       if (!callActive || isManualSimulation) return;
       liveChunkCounter++;
+
+      var effectiveSource = sourceType || (typeof selectedAudioSource !== 'undefined' ? selectedAudioSource : 'mic');
 
       var callBadge = document.getElementById('callStatusBadge');
       if (callBadge) {
@@ -4630,19 +4701,28 @@
         fd.append('file', blob, 'live_chunk.wav');
         fd.append('session_id', liveSessionId);
         fd.append('mode', 'live');
+        fd.append('source_type', effectiveSource);
 
         var resp = await fetch(API_BASE + '/api/score', {
           method: 'POST',
           body: fd
         });
-        if (resp.ok) {
-          var data = await resp.json();
-          if (!data.error && callActive && !isManualSimulation) {
-            updateCombinedRiskUI(data);
-          }
+        if (!resp || !resp.ok) {
+          console.warn("[LIVE SCORE] chunk HTTP status notice:", resp ? resp.status : "null");
+          return;
+        }
+        var data;
+        try {
+          data = await resp.json();
+        } catch (jErr) {
+          console.warn("[LIVE SCORE] JSON parse notice:", jErr);
+          return;
+        }
+        if (data && !data.error && callActive && !isManualSimulation) {
+          updateCombinedRiskUI(data);
         }
       } catch (err) {
-        console.warn("[LIVE SCORE] chunk post failed:", err);
+        console.warn("[LIVE SCORE] chunk post failed safely:", err);
       }
     }
     window.handleLiveWavChunk = handleLiveWavChunk;
@@ -4770,21 +4850,26 @@
             alert("getUserMedia is not supported in this browser.");
             return;
           }
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: false,
-              autoGainControl: false
-            }
-          });
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                autoGainControl: false,
+                channelCount: 1
+              }
+            });
+          } catch (e) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          }
         }
 
         liveAudioStream = stream;
         stopFallbackWaveform();
         setupWebAudioAnalyser(stream);
 
-        wavCaptureInstance = new WavStreamCapture(stream, handleLiveWavChunk);
-        await wavCaptureInstance.start();
+        wavCaptureInstance = new WavStreamCapture(stream, handleLiveWavChunk, selectedAudioSource);
+        await wavCaptureInstance.start(selectedAudioSource);
 
         if (!speechRecognition) {
           speechRecognition = startSpeechRecognition();
@@ -4859,8 +4944,8 @@
         liveAudioStream = existingStream;
         stopFallbackWaveform();
         setupWebAudioAnalyser(existingStream);
-        wavCaptureInstance = new WavStreamCapture(existingStream, handleLiveWavChunk);
-        await wavCaptureInstance.start();
+        wavCaptureInstance = new WavStreamCapture(existingStream, handleLiveWavChunk, selectedAudioSource);
+        await wavCaptureInstance.start(selectedAudioSource);
         if (!speechRecognition) {
           speechRecognition = startSpeechRecognition();
         }
