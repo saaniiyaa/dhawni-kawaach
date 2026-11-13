@@ -8,6 +8,9 @@ import json
 import time
 
 from flask import Blueprint, current_app, jsonify, request
+import numpy as np
+
+from channel_calibration import evaluate_channel_and_calibrate
 
 bp = Blueprint("defense_api", __name__)
 
@@ -44,6 +47,12 @@ def evidence_dossier():
         "chain_of_custody": "hashes computed on-device at analysis time; no raw audio uploaded; certificate generated server-side",
         "disclaimer": "DEMONSTRATION - telephone channel simulated and disclosed; certificate is a template, not legal advice.",
     }
+    if "channel_quality" in p:
+        case["channel_quality"] = p["channel_quality"]
+    if "uncertainty_note" in p:
+        case["uncertainty_note"] = p["uncertainty_note"]
+    if "channel_metrics" in p:
+        case["channel_metrics"] = p["channel_metrics"]
     case["record_sha256"] = _sha256(case)
     return jsonify({"success": True, "dossier": case})
 
@@ -255,6 +264,8 @@ def forensics_vitals():
         flags.append("almost no pauses - natural speech breathes")
     if run == run and run > 8:
         flags.append("8s+ continuous speech without pause - unnatural breathing pattern")
+    if p.get("channel_quality") == "TELEPHONY_DEGRADED":
+        flags.append("telephony degraded channel (8kHz / band-limited / low SNR)")
     return jsonify({
         "success": True,
         "received_metrics": {
@@ -291,3 +302,26 @@ def challenge_token():
         "anti_replay": "a pre-recorded clip cannot contain a token generated after the call started",
         "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
     })
+
+
+@bp.route("/api/calibrate", methods=["POST"])
+@bp.route("/api/channel/calibrate", methods=["POST"])
+def channel_calibrate():
+    """Evaluate channel degradation and calibrate risk tier."""
+    p = request.get_json(silent=True) or {}
+    raw_prob = float(p.get("raw_ai_prob", p.get("score", p.get("p", 0.5))))
+    sr = int(p.get("sr", 16000))
+    audio_data = p.get("audio")
+    if isinstance(audio_data, list):
+        y = np.array(audio_data, dtype=np.float32)
+    elif isinstance(audio_data, str) and audio_data:
+        import base64
+        try:
+            raw_bytes = base64.b64decode(audio_data.split(",")[-1])
+            y = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0 if len(raw_bytes) % 2 == 0 else np.array([], dtype=np.float32)
+        except Exception:
+            y = np.array([], dtype=np.float32)
+    else:
+        y = np.array([], dtype=np.float32)
+    res = evaluate_channel_and_calibrate(y, sr, raw_prob)
+    return jsonify({"success": True, **res})

@@ -35,6 +35,7 @@ class EngineState:
     _pending: str = INSUFFICIENT
     _pending_count: int = 0
     history: list = field(default_factory=list)
+    session_risk: float = 0.0
 
 
 class TemporalEngine:
@@ -52,21 +53,28 @@ class TemporalEngine:
         # Log-odds ratio relative to calibrated decision threshold
         return math.log(p / (1 - p)) - math.log(theta_ref / (1 - theta_ref))
 
-    def update(self, p_spoof, voiced_seconds, t=None):
+    def update(self, p_spoof, voiced_seconds, t=None, is_pause=False):
         c, s = self.cfg, self.s
         s.n_windows += 1
         s.voiced_seconds += voiced_seconds
-        s.ema = p_spoof if s.n_windows == 1 else c.ema_alpha * p_spoof + (1 - c.ema_alpha) * s.ema
-        
-        # If window is mostly silent/unvoiced (<0.6s), do not accumulate fake evidence
-        if voiced_seconds >= 0.6:
+
+        # Turn-taking pause chunk: decay accumulated session risk gradually (prev_risk * 0.90)
+        # instead of resetting the session risk score to zero
+        if is_pause or voiced_seconds < 0.6:
+            prev_risk = s.session_risk if (s.n_windows > 1 and s.session_risk > 0) else (1 / (1 + math.exp(-s.llr)))
+            decayed = float(prev_risk * 0.90)
+            s.session_risk = decayed
+            p_clamped = min(max(decayed, 1e-6), 1 - 1e-6)
+            s.llr = math.log(p_clamped / (1 - p_clamped))
+            p_spoof = decayed
+            call_p = decayed
+        else:
             step = max(-c.llr_clip, min(c.llr_clip, self._llr(p_spoof, c.theta_neutral)))
             s.llr = s.llr * c.llr_decay + step * min(voiced_seconds, 1.0)  # evidence meter
-        else:
-            # Gentle decay towards safe baseline during pauses
-            s.llr = s.llr * c.llr_decay - 0.15
+            call_p = 1 / (1 + math.exp(-s.llr))
+            s.session_risk = call_p
 
-        call_p = 1 / (1 + math.exp(-s.llr))
+        s.ema = p_spoof if s.n_windows == 1 else c.ema_alpha * p_spoof + (1 - c.ema_alpha) * s.ema
 
         if s.voiced_seconds < c.min_voiced_seconds:
             target = INSUFFICIENT
@@ -89,9 +97,16 @@ class TemporalEngine:
 
         out = {"t": t, "window_p": float(p_spoof), "ema": float(s.ema),
                "call_p": float(call_p), "llr": float(s.llr), "tier": s.tier,
+               "session_risk": float(s.session_risk),
                "voiced_seconds": round(s.voiced_seconds, 2), "n_windows": s.n_windows}
         s.history.append(out)
         return out
+
+    def update_pause(self, decay_factor=0.90, t=None):
+        """When a 1.0s-2.0s silent/low-VAD pause chunk arrives (simulating full-duplex
+        conversational turn-taking), decay the accumulated session risk gradually
+        (prev_risk * 0.90) instead of resetting the session risk score to zero."""
+        return self.update(0.0, 0.0, t=t, is_pause=True)
 
 
 # ---------------- the prevention policy: what the bank/app actually does ----------------

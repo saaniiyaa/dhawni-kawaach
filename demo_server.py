@@ -25,6 +25,7 @@ from ml.models.cnn import MelCNN
 from ml.engine.temporal import TemporalEngine, EngineConfig, policy_for
 from ml.engine import voiceprint_falak
 from ml.augment.codecs import FFMPEG, run_quiet
+from channel_calibration import evaluate_channel_and_calibrate
 
 torch.set_num_threads(1)
 
@@ -51,6 +52,9 @@ engine = TemporalEngine(EngineConfig(
     theta_lo=float(CAL.get("theta_lo", 0.62)),
     theta_hi=float(CAL.get("theta_hi", 0.90)),
 ))
+SESSION_STATE = {
+    "prev_risk": 0.0,
+}
 if CAL:
     print(f"calibration: loaded {_CAL_PATH} "
           f"(vad_min={CAL.get('vad_min')}, bias={CAL.get('logit_bias')}, "
@@ -109,6 +113,14 @@ except ImportError:
     print("CORS: flask-cors not installed - other devices may be blocked")
 
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+    return response
+
+
 def score_audio(y):
     piece = fix_length(np.asarray(y, dtype=np.float32), int(SECONDS * SR))
     x = logmel(piece)
@@ -120,13 +132,17 @@ def score_audio(y):
 
 def decode_to_wav(raw_bytes, suffix):
     tmp = tempfile.mkdtemp(prefix="dk_demo_")
-    inp = os.path.join(tmp, "in" + suffix)
-    out = os.path.join(tmp, "out.wav")
-    with open(inp, "wb") as fh:
-        fh.write(raw_bytes)
-    run_quiet([FFMPEG, "-hide_banner", "-y", "-i", inp,
-               "-ar", str(SR), "-ac", "1", out])
-    return load(out)
+    try:
+        inp = os.path.join(tmp, "in" + suffix)
+        out = os.path.join(tmp, "out.wav")
+        with open(inp, "wb") as fh:
+            fh.write(raw_bytes)
+        run_quiet([FFMPEG, "-hide_banner", "-y", "-i", inp,
+                   "-ar", str(SR), "-ac", "1", out])
+        return load(out)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 @app.route("/")
@@ -137,12 +153,21 @@ def index():
 @app.route("/api/reset", methods=["POST"])
 def reset():
     engine.reset()
+    SESSION_STATE["prev_risk"] = 0.0
     return jsonify({"ok": True})
 
-@app.route("/api/ping", methods=["GET", "POST"])
+@app.route("/api/ping", methods=["GET", "POST", "OPTIONS"])
+@app.route("/api/health", methods=["GET", "POST", "OPTIONS"])
 def ping():
-    return jsonify({"ok": True, "status": "ok", "online": True,
-                    "backend": "online", "model": MODEL_NAME})
+    return jsonify({
+        "status": "ONLINE",
+        "app": "DHWANI-KAVACH",
+        "ok": True,
+        "online": True,
+        "backend": "online",
+        "model": MODEL_NAME,
+        "timestamp": time.time(),
+    })
 
 @app.route("/api/context", methods=["POST"])
 def context():
@@ -176,7 +201,13 @@ def context():
         notes.append("Caller claims to be from a bank but the number is not the "
                      "bank's official helpline - classic impersonation pattern")
         level = "danger"
-    return jsonify({"number": number, "level": level, "notes": notes})
+    trust_score = 38 if level == "danger" else (62 if level == "warning" else 94)
+    return jsonify({
+        "number": number,
+        "level": level,
+        "notes": notes,
+        "trust_score": trust_score,
+    })
 
 
 
@@ -228,11 +259,18 @@ def api_score():
             suffix = ".m4a"
         else:
             suffix = ".bin"
-        if "multipart/form-data" in ctype:
-            f = next(iter(request.files.values()), None)
+        if request.files or "multipart/form-data" in ctype:
+            f = request.files.get("file") or request.files.get("audio") or next(iter(request.files.values()), None)
             raw_bytes = f.read() if f is not None else b""
             if f is not None and f.filename and "." in f.filename:
                 suffix = "." + f.filename.rsplit(".", 1)[-1].lower()
+            elif f is not None and getattr(f, "content_type", ""):
+                ct = f.content_type.lower()
+                if "webm" in ct: suffix = ".webm"
+                elif "ogg" in ct: suffix = ".ogg"
+                elif "wav" in ct: suffix = ".wav"
+                elif "mp3" in ct or "mpeg" in ct: suffix = ".mp3"
+                elif "mp4" in ct or "m4a" in ct: suffix = ".m4a"
         elif "json" in ctype:
             import base64 as _b64
             raw_bytes = b""
@@ -253,15 +291,26 @@ def api_score():
         y = decode_to_wav(raw_bytes, suffix)       
         if len(y) < SR:
             return jsonify({"error": "too short"})
-        vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean())
-        if vfrac < float(CAL.get("vad_min", 0.0)):
-            r = engine.update(0.5, 0.0)
+        chunk_dur = len(y) / SR
+        vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean()) if len(y) >= int(SECONDS * SR) else float(energy_vad(y).mean())
+        vad_min = float(CAL.get("vad_min", 0.25))
+
+        # Turn-taking pause chunk: decay accumulated session risk gradually (prev_risk * 0.90)
+        # instead of resetting the session risk score to zero
+        if (1.0 <= chunk_dur <= 2.0 and vfrac < vad_min) or vfrac < vad_min:
+            r = engine.update_pause(decay_factor=0.90)
+            SESSION_STATE["prev_risk"] = r["call_p"]
+            raw_ai_prob = r["window_p"]
         else:
             raw = score_audio(y)
             bias = float(CAL.get("logit_bias", 0.0))
             q = min(max(raw, 1e-4), 1 - 1e-4)
             p = 1.0 / (1.0 + math.exp(-(math.log(q / (1.0 - q)) + bias)))
             r = engine.update(p, vfrac * SECONDS)
+            SESSION_STATE["prev_risk"] = r["call_p"]
+            raw_ai_prob = r["window_p"]
+
+        calib = evaluate_channel_and_calibrate(y, SR, raw_ai_prob)
         pol = policy_for(r["tier"])
         return jsonify({
             "window_p": round(r["window_p"], 4),
@@ -274,6 +323,11 @@ def api_score():
             "step_up": pol["step_up"],
             "allow_sensitive": pol["allow_sensitive_action"],
             "model": MODEL_NAME,
+            "channel_quality": calib["channel_quality"],
+            "uncertainty_note": calib["uncertainty_note"],
+            "channel_metrics": calib["channel_metrics"],
+            "calibrated_prob": calib["calibrated_prob"],
+            "calibrated_tier": calib["tier"],
         })
     except Exception as e:
         return jsonify({"error": str(e)})
