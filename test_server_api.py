@@ -61,6 +61,8 @@ class TestDhwaniKavachAPI(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
         self.assertNotIn("error", data)
+        self.assertIn("channel_quality", data)
+        self.assertIn("uncertainty_note", data)
         self.assertLess(data.get("window_p", 1.0), 0.50)
         self.assertIn(data.get("tier"), ["SAFE", "INSUFFICIENT_AUDIO"])
 

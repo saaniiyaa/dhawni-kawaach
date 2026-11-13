@@ -112,6 +112,13 @@ try:
 except ImportError:
     print("CORS: flask-cors not installed - other devices may be blocked")
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    return response
+
 
 @app.after_request
 def add_cors_headers(response):
@@ -289,8 +296,11 @@ def api_score():
         if not raw_bytes:
             return jsonify({"error": "no audio received"})
         y = decode_to_wav(raw_bytes, suffix)       
-        if len(y) < SR:
+        if len(y) < int(0.75 * SR):
             return jsonify({"error": "too short"})
+        if len(y) < SR:
+            y = np.pad(y, (0, SR - len(y)))
+
         chunk_dur = len(y) / SR
         vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean()) if len(y) >= int(SECONDS * SR) else float(energy_vad(y).mean())
         vad_min = float(CAL.get("vad_min", 0.25))
