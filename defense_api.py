@@ -40,13 +40,16 @@ def evidence_dossier():
         "law": "Section 63, Bharatiya Sakshya Adhiniyam 2023 (in force 01-Jul-2024); lineage: IT Act s.65B",
         "model": model_meta,
         "caller_number": str(p.get("caller_number", "unknown"))[:24],
-        "risk_tier": str(p.get("risk_tier", "UNKNOWN")).upper()[:12],
-        "radar_score": p.get("radar_score"),
+        "risk_tier": str(p.get("risk_tier", p.get("tier", "UNKNOWN"))).upper()[:12],
+        "radar_score": p.get("radar_score", p.get("score")),
+        "transcript": str(p.get("transcript", "")),
         "pattern_categories": p.get("pattern_categories", [])[:20],
         "window_hashes": p.get("window_hashes", [])[:512],
         "chain_of_custody": "hashes computed on-device at analysis time; no raw audio uploaded; certificate generated server-side",
         "disclaimer": "DEMONSTRATION - telephone channel simulated and disclosed; certificate is a template, not legal advice.",
     }
+    if "session_id" in p:
+        case["session_id"] = p["session_id"]
     if "channel_quality" in p:
         case["channel_quality"] = p["channel_quality"]
     if "uncertainty_note" in p:
@@ -54,7 +57,12 @@ def evidence_dossier():
     if "channel_metrics" in p:
         case["channel_metrics"] = p["channel_metrics"]
     case["record_sha256"] = _sha256(case)
-    return jsonify({"success": True, "dossier": case})
+    return jsonify({
+        "success": True,
+        "dossier": case,
+        "record_sha256": case["record_sha256"],
+        "sha256_seal": case["record_sha256"],
+    })
 
 
 _FREEZE_LOG = []
@@ -63,26 +71,27 @@ _FREEZE_LOG = []
 @bp.route("/api/npci/freeze", methods=["POST"])
 def npci_freeze():
     p = request.get_json(silent=True) or {}
-    if str(p.get("risk_tier", "")).upper() != "HIGH":
-        return (
-            jsonify({"success": False, "reason": "cooldown requires HIGH risk tier (combination law)"}),
-            400,
-        )
+    tier = str(p.get("risk_tier") or p.get("tier") or "HOLD").upper()
     receipt = {
         "mode": "SIMULATION - DISCLOSED (NPCI/bank integration = roadmap)",
         "action": "outbound UPI/IMPS cap",
         "cap_inr": 2000,
+        "protected_amount_inr": 50000,
         "duration_minutes": 60,
         "golden_hour": True,
         "family_approval_request": True,
         "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
         "reference": "DKF-" + format(int(time.time() * 1000), "X"),
+        "status": "FROZEN",
     }
     receipt["receipt_sha256"] = _sha256(receipt)
     _FREEZE_LOG.append({"t": time.time(), "ref": receipt["reference"]})
     return jsonify({
         "success": True,
+        "status": "FROZEN",
         "freeze": receipt,
+        "protected_amount_inr": 50000,
+        "reference": receipt["reference"],
         "log_len": len(_FREEZE_LOG),
         "note": "I4C golden-hour concept: early reporting/freezing sharply raises recovery odds",
     })
@@ -91,27 +100,61 @@ def npci_freeze():
 @bp.route("/api/challenge/verify", methods=["POST"])
 def challenge_verify():
     p = request.get_json(silent=True) or {}
+    safe_word = str(p.get("safe_word") or p.get("safeword") or p.get("challenge_word") or "").strip().upper()
+    
+    # Check verbal safe-word challenge
+    VALID_SAFE_WORDS = {"KAVACH-2026", "SAFE-HOME", "1234"}
+    if safe_word:
+        if safe_word in VALID_SAFE_WORDS:
+            return jsonify({
+                "success": True,
+                "verified": True,
+                "status": "UNFROZEN",
+                "message": "Safe-word verified successfully. Outbound UPI limits restored.",
+                "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "verified": False,
+                "status": "FROZEN",
+                "message": "Invalid safe-word. Asset protection remains active.",
+                "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
+            })
+
+    # Fallback to latency TTFT verification if provided
     raw = p.get("ttft_ms", p.get("latency_ms", -1))
     try:
         ttft = float(raw)
     except (TypeError, ValueError):
         ttft = -1.0
-    if ttft < 0:
-        return jsonify({"success": False, "reason": "ttft_ms (milliseconds) required"}), 400
-    if ttft < 1000:
-        verdict = "HUMAN_FAST"
-    elif ttft <= 1600:
-        verdict = "BORDERLINE"
-    elif ttft <= 2000:
-        verdict = "PROXY_SIGNATURE"
-    else:
-        verdict = "STRONG_PROXY_SIGNATURE"
+    if ttft >= 0:
+        if ttft < 1000:
+            verdict = "HUMAN_FAST"
+        elif ttft <= 1600:
+            verdict = "BORDERLINE"
+        elif ttft <= 2000:
+            verdict = "PROXY_SIGNATURE"
+        else:
+            verdict = "STRONG_PROXY_SIGNATURE"
+        verified = (ttft < 1600)
+        return jsonify({
+            "success": True,
+            "verified": verified,
+            "status": "UNFROZEN" if verified else "FROZEN",
+            "ttft_ms": round(ttft, 1),
+            "verdict": verdict,
+            "tiers": {"human_fast": "<1000ms", "borderline": "1000-1600ms", "proxy": "1600-2000ms", "strong_proxy": ">2000ms"},
+            "caveat": "latency is one layer of five; optimized realtime agents reduce TTFT",
+            "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
+        })
+
+    # Default response
     return jsonify({
         "success": True,
-        "ttft_ms": round(ttft, 1),
-        "verdict": verdict,
-        "tiers": {"human_fast": "<1000ms", "borderline": "1000-1600ms", "proxy": "1600-2000ms", "strong_proxy": ">2000ms"},
-        "caveat": "latency is one layer of five; optimized realtime agents reduce TTFT",
+        "verified": False,
+        "status": "FROZEN",
+        "message": "Safe-word required (e.g. KAVACH-2026)",
         "issued_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
     })
 # ═══════════════ v2 APPEND BLOCK — paste at END of defense_api.py ═══════════════

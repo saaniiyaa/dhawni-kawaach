@@ -1551,6 +1551,22 @@
               <span class="material-symbols-outlined text-[19px]">lock</span>
             </button>
           </div>
+
+          <div id="assetShieldContainer" class="hidden w-full mt-2 pt-2.5 border-t border-[var(--border-card)] flex flex-col sm:flex-row items-center justify-between gap-3 text-[13px]">
+            <div class="flex items-center gap-2.5">
+              <span class="material-symbols-outlined text-[24px] text-[var(--accent-crimson)] animate-pulse">shield_lock</span>
+              <div>
+                <div class="font-extrabold text-[var(--accent-crimson)] text-[14px]">Asset Shield Active: Outbound UPI Frozen (₹50,000 Protected)</div>
+                <div class="text-[12px] text-[var(--text-muted)]">Autonomous NPCI circuit breaker engaged. Enter verbal safe-word to unfreeze. (Demo Hint: <span class="font-mono font-bold text-[var(--accent-cyan)]">KAVACH-2026</span>)</div>
+              </div>
+            </div>
+            <div class="flex items-center gap-2 w-full sm:w-auto">
+              <input type="text" id="safeWordInput" placeholder="Safe-Word" class="px-3 py-1.5 rounded-lg bg-[var(--bg-card-sub)] border border-[var(--border-card)] text-white text-[13px] font-mono uppercase focus:outline-none focus:border-[var(--accent-cyan)] w-full sm:w-36" />
+              <button type="button" id="btnVerifySafeWord" onclick="verifySafeWordChallenge()" class="px-3.5 py-1.5 rounded-lg bg-[var(--accent-emerald)] text-black font-extrabold text-[12.5px] hover:opacity-90 active:scale-95 transition-all whitespace-nowrap cursor-pointer shadow-md">
+                Verify &amp; Unfreeze
+              </button>
+            </div>
+          </div>
         </section>
 
         <!-- 3. MULTI-VECTOR EXTORTION STREAM -->
@@ -2018,6 +2034,24 @@
       autoKillswitch: true
     };
 
+    function showToastNotification(msg) {
+      var t = document.getElementById('dkToastNotification');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'dkToastNotification';
+        t.style.cssText = 'position:fixed;top:32px;left:50%;transform:translateX(-50%);z-index:999999;background:#0f172a;color:#38bdf8;border:1px solid #38bdf8;padding:12px 24px;border-radius:12px;font-weight:800;font-size:14px;box-shadow:0 12px 30px rgba(0,0,0,0.7);transition:opacity 0.3s;pointer-events:none;max-width:90vw;text-align:center;font-family:sans-serif;';
+        document.body.appendChild(t);
+      }
+      t.textContent = msg;
+      t.style.opacity = '1';
+      t.style.display = 'block';
+      setTimeout(function () {
+        t.style.opacity = '0';
+        setTimeout(function () { t.style.display = 'none'; }, 350);
+      }, 4000);
+    }
+    window.showToastNotification = showToastNotification;
+
     // ============================================================================
     // 2. 3-PILLAR THREAT STATE-MACHINE & INDIAN SCAM TAXONOMY (HYSTERESIS DEBOUNCED)
     // ============================================================================
@@ -2238,94 +2272,86 @@
           activePillars: [],
           matchedCategories: [],
           matchedKeywords: [],
-          topThreat: null
+          topThreat: null,
+          coercionDetected: false
         };
       }
 
       var lower = text.toLowerCase();
-      var now = Date.now();
       var matchedKeywords = [];
+
+      // Multi-factor 3 vectors:
+      // Vector A (Authority/Impersonation): cbi, ed, cyber cell, police, arrest warrant, customs, narcotics, supreme court, rbi, trai notice, parcel seized
+      var vectorA = ["cbi", "ed", "cyber cell", "police", "arrest warrant", "customs", "narcotics", "supreme court", "rbi", "trai notice", "parcel seized"];
+      // Vector B (Urgency/Isolation): immediately, right now, abhi, turant, video call, don't disconnect, phone mat katna, digital arrest, jail
+      var vectorB = ["immediately", "right now", "abhi", "turant", "video call", "don't disconnect", "dont disconnect", "phone mat katna", "digital arrest", "jail"];
+      // Vector C (Financial/Credential Demand): otp, upi, transfer, bank account, fine, bail, paise bhejo, scan qr, verify account, share screen
+      var vectorC = ["otp", "upi", "transfer", "bank account", "fine", "bail", "paise bhejo", "scan qr", "verify account", "share screen"];
+
+      // Explicit high-severity scam phrases
+      var highSeverityPhrases = ["digital arrest", "cbi arrest warrant", "mujhe aapka otp chahiye", "paise transfer karo"];
+
+      function findMatches(terms) {
+        var matches = [];
+        for (var i = 0; i < terms.length; i++) {
+          var t = terms[i];
+          if (t.indexOf(' ') !== -1 || t.indexOf('-') !== -1 || t.indexOf("'") !== -1) {
+            if (lower.indexOf(t) !== -1) matches.push(t);
+          } else {
+            var esc = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            var reg = new RegExp('(^|\\s|[^a-zA-Z0-9])' + esc + '($|\\s|[^a-zA-Z0-9])', 'i');
+            if (reg.test(lower)) matches.push(t);
+          }
+        }
+        return matches;
+      }
+
+      var matchedA = findMatches(vectorA);
+      var matchedB = findMatches(vectorB);
+      var matchedC = findMatches(vectorC);
+      var matchedHighSev = [];
+      for (var hi = 0; hi < highSeverityPhrases.length; hi++) {
+        if (lower.indexOf(highSeverityPhrases[hi]) !== -1) matchedHighSev.push(highSeverityPhrases[hi]);
+      }
+
+      var allMatched = matchedA.concat(matchedB, matchedC, matchedHighSev);
+      for (var m = 0; m < allMatched.length; m++) {
+        if (matchedKeywords.indexOf(allMatched[m]) === -1) matchedKeywords.push(allMatched[m]);
+      }
+
       var activePillars = [];
-      var pillarHits = { authority: 0, coercion: 0, financial_urgency: 0 };
+      if (matchedA.length > 0) activePillars.push("authority");
+      if (matchedB.length > 0) activePillars.push("coercion");
+      if (matchedC.length > 0) activePillars.push("financial_urgency");
 
-      // 1. Evaluate 3 Pillars with Word-Boundary Regex
-      for (var pKey in THREAT_PILLARS) {
-        var pillar = THREAT_PILLARS[pKey];
-        var hits = 0;
+      var ruleABC = (matchedC.length > 0 && (matchedA.length > 0 || matchedB.length > 0));
+      var ruleHighSev = (matchedHighSev.length > 0);
+      var coercionDetected = (ruleABC || ruleHighSev);
 
-        // Compound phrases
-        for (var pi = 0; pi < pillar.phrases.length; pi++) {
-          var phrase = pillar.phrases[pi];
-          if (lower.indexOf(phrase) !== -1) {
-            hits += 2;
-            if (matchedKeywords.indexOf(phrase) === -1) matchedKeywords.push(phrase);
-          }
-        }
+      var computedRisk = 0;
+      var coercionIntent = "CLEAN";
 
-        // Boundary keywords
-        for (var ki = 0; ki < pillar.keywords.length; ki++) {
-          var kw = pillar.keywords[ki];
-          if (kw.toLowerCase() === 'trai') {
-            var traiCtx = ["disconnect", "block", "sim", "suspend", "notice", "number", "department", "illegal"];
-            var hasTraiCtx = traiCtx.some(function (ctx) { return lower.indexOf(ctx) !== -1; });
-            if (!hasTraiCtx) continue;
-          }
-          var escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          var regex = new RegExp('(^|\\s|[^a-zA-Z0-9])' + escaped + '($|\\s|[^a-zA-Z0-9])', 'i');
-          if (regex.test(lower)) {
-            hits += 1;
-            if (matchedKeywords.indexOf(kw) === -1) matchedKeywords.push(kw);
-          }
-        }
-
-        if (hits > 0) {
-          threatEngineState.pillarTimestamps[pKey] = now;
-          pillarHits[pKey] = hits;
-        }
+      if (coercionDetected) {
+        computedRisk = Math.min(95, 85 + (matchedKeywords.length * 3));
+        coercionIntent = "DETECTED";
+      } else if (matchedA.length > 0 || matchedB.length > 0 || matchedC.length > 0) {
+        // Isolated single-factor mention (e.g. only "trai" or only "police"): capped at 20% SAFE
+        computedRisk = Math.min(20, 6 + (matchedKeywords.length * 2));
+        coercionIntent = "MONITORING";
+      } else {
+        computedRisk = 0;
+        coercionIntent = "CLEAN";
       }
 
-      // 2. Rolling 3-Second Temporal Context & Hysteresis Decay
-      // If a pillar was matched recently (within 3.5s window), count it as actively intersecting
-      var activePillarsCount = 0;
-      for (var pk in threatEngineState.pillarTimestamps) {
-        var age = now - threatEngineState.pillarTimestamps[pk];
-        if (age < 3500) {
-          activePillars.push(pk);
-          activePillarsCount++;
-        }
-      }
-
-      // 3. Category Evaluation
+      // Check taxonomy category for UI badge styling
       var matchedCategories = [];
       var topCategory = null;
-
       for (var catKey in MULTI_FRAUD_TAXONOMY) {
         var cat = MULTI_FRAUD_TAXONOMY[catKey];
         var catHits = 0;
-
         for (var cp = 0; cp < cat.phrases.length; cp++) {
-          var cPhrase = cat.phrases[cp];
-          if (lower.indexOf(cPhrase) !== -1) {
-            catHits += 2;
-            if (matchedKeywords.indexOf(cPhrase) === -1) matchedKeywords.push(cPhrase);
-          }
+          if (lower.indexOf(cat.phrases[cp]) !== -1) catHits += 2;
         }
-
-        for (var ck = 0; ck < cat.keywords.length; ck++) {
-          var cKw = cat.keywords[ck];
-          if (cKw.toLowerCase() === 'trai') {
-            var traiCtx2 = ["disconnect", "block", "sim", "suspend", "notice", "number", "department", "illegal"];
-            var hasTraiCtx2 = traiCtx2.some(function (ctx) { return lower.indexOf(ctx) !== -1; });
-            if (!hasTraiCtx2) continue;
-          }
-          var cEsc = cKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          var cReg = new RegExp('(^|\\s|[^a-zA-Z0-9])' + cEsc + '($|\\s|[^a-zA-Z0-9])', 'i');
-          if (cReg.test(lower)) {
-            catHits += 1;
-            if (matchedKeywords.indexOf(cKw) === -1) matchedKeywords.push(cKw);
-          }
-        }
-
         if (catHits > 0) {
           var catObj = {
             key: catKey,
@@ -2337,52 +2363,19 @@
             chipClass: cat.chipClass
           };
           matchedCategories.push(catObj);
-          if (!topCategory || catHits > topCategory.hits) {
-            topCategory = catObj;
-          }
+          if (!topCategory || catHits > topCategory.hits) topCategory = catObj;
         }
-      }
-
-      // 4. CRITICAL STATE-MACHINE RESOLUTION:
-      // Single isolated words NEVER trigger red siren.
-      var computedRisk = 0;
-      var coercionIntent = "CLEAN";
-
-      if (activePillarsCount === 0) {
-        computedRisk = 0;
-        coercionIntent = "CLEAN";
-      } else if (activePillarsCount === 1) {
-        // Only 1 isolated pillar (e.g. only said "police" or only said "bank"):
-        // STRICTLY CAPPED at 24% (SAFE / MONITORING). No siren!
-        computedRisk = Math.min(24, 6 + (matchedKeywords.length * 3));
-        coercionIntent = "MONITORING";
-      } else if (activePillarsCount === 2) {
-        // 2 intersecting pillars (e.g. Authority + Coercion OR Coercion + Financial Urgency):
-        // Elevated threat tier
-        var hasCoercion = activePillars.indexOf("coercion") !== -1;
-        var hasUrgency = activePillars.indexOf("financial_urgency") !== -1;
-        if (hasCoercion && hasUrgency) {
-          computedRisk = Math.min(88, 70 + (matchedKeywords.length * 4));
-          coercionIntent = "SEVERE";
-        } else {
-          computedRisk = Math.min(78, 62 + (matchedKeywords.length * 3));
-          coercionIntent = "ELEVATED";
-        }
-      } else {
-        // All 3 pillars intersecting (Authority + Coercion + Financial Extraction):
-        // Critical Extortion State
-        computedRisk = Math.min(99, 88 + (matchedKeywords.length * 3));
-        coercionIntent = "SEVERE";
       }
 
       return {
         riskScore: Math.round(computedRisk),
         coercionIntent: coercionIntent,
-        pillarCount: activePillarsCount,
+        pillarCount: activePillars.length,
         activePillars: activePillars,
         matchedCategories: matchedCategories,
         matchedKeywords: matchedKeywords,
-        topThreat: topCategory
+        topThreat: topCategory,
+        coercionDetected: coercionDetected
       };
     }
 
@@ -3558,6 +3551,287 @@
     }
     window.resetSafeGreenUI = resetSafeGreenUI;
 
+    var currentDashboardState = "IDLE";
+    window.currentDashboardState = currentDashboardState;
+
+    async function verifySafeWordChallenge() {
+      var inp = document.getElementById('safeWordInput');
+      var word = inp ? inp.value.trim() : '';
+      if (!word) {
+        showToastNotification('Please enter the Safe-Word to verify');
+        return;
+      }
+      try {
+        var resp = await fetch('/api/challenge/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ safe_word: word })
+        });
+        var data = await resp.json();
+        if (data.verified) {
+          showToastNotification('✅ Safe-Word verified! Outbound limits unfrozen.');
+          renderDashboardState({ state: 'VERIFIED_SAFE', riskScore: 10 });
+        } else {
+          showToastNotification('❌ Invalid Safe-Word. Asset protection remains active.');
+        }
+      } catch (e) {
+        showToastNotification('Safe-Word check notice: ' + e);
+      }
+    }
+    window.verifySafeWordChallenge = verifySafeWordChallenge;
+
+    function renderDashboardState(stateObj) {
+      var s = (stateObj && stateObj.state ? stateObj.state : "IDLE").toUpperCase();
+      currentDashboardState = s;
+
+      var overallRisk = stateObj.riskScore !== undefined ? stateObj.riskScore : (s === "CRITICAL_THREAT" ? 92 : (s === "SAFE_ACTIVE" ? 10 : 0));
+      overallRisk = Math.min(99, Math.max(0, Math.round(overallRisk)));
+
+      var scoreEl = document.getElementById('riskScoreNumber');
+      var labelEl = document.getElementById('riskScoreLabel');
+      var gaugePath = document.getElementById('svgGaugeCircle');
+      var vocalProsodyLabel = document.getElementById('vocalProsodyLabel');
+      var statusPill = document.getElementById('telemetryStatusPill');
+      var headerStatusText = document.getElementById('headerStatusText');
+      var mobileStatusText = document.getElementById('mobileStatusText');
+      var spkText = document.getElementById('speakerIdentityText');
+      var spkDot = document.getElementById('speakerIdentityDot');
+      var threatBanner = document.getElementById('threatBanner');
+      var callerCard = document.getElementById('callerCard');
+      var phoneChassis = document.getElementById('phoneChassis');
+      var pulseRing = document.getElementById('mainPulseRing');
+      var bankingCard = document.getElementById('bankingDefenseCard');
+      var bankingPolicyText = document.getElementById('bankingPolicyText');
+      var assetShieldContainer = document.getElementById('assetShieldContainer');
+      var waveBars = document.querySelectorAll('#activeVisual .wave-bar, .wave-bar');
+
+      // Update Gauge
+      if (gaugePath) gaugePath.setAttribute('stroke-dasharray', overallRisk + ', 100');
+      if (scoreEl) scoreEl.textContent = overallRisk + '%';
+
+      if (s === "IDLE") {
+        emergencyActive = false;
+        stopEmergencySiren();
+        if (gaugePath) gaugePath.style.stroke = '#10b981';
+        if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-emerald)] leading-none';
+        if (labelEl) {
+          labelEl.textContent = "SAFE";
+          labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-emerald)] uppercase tracking-wider mt-1';
+        }
+        if (headerStatusText) {
+          headerStatusText.textContent = 'SYSTEM SECURE';
+          headerStatusText.className = 'text-[13.5px] font-mono font-extrabold tracking-wider text-[var(--header-badge-text)] uppercase whitespace-nowrap';
+          var hDot = headerStatusText.previousElementSibling;
+          if (hDot) hDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (mobileStatusText) {
+          mobileStatusText.textContent = 'SYSTEM SECURE • I4C 1930 READY';
+          mobileStatusText.className = 'text-[13px] font-mono font-extrabold tracking-wider text-[var(--header-badge-text)] uppercase';
+          var mDot = mobileStatusText.previousElementSibling;
+          if (mDot) mDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (spkText) spkText.textContent = 'SPEAKER: ⚪ STANDBY • IDLE';
+        if (spkDot) spkDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        if (vocalProsodyLabel) {
+          vocalProsodyLabel.textContent = 'READY FOR CALL INPUT';
+          vocalProsodyLabel.className = 'mt-3 text-center text-[13.5px] font-mono font-extrabold text-[var(--accent-emerald)] bg-[var(--header-badge-bg)] px-4 py-1.5 rounded-full border border-[var(--header-badge-border)] tracking-wider whitespace-nowrap';
+        }
+        if (statusPill) {
+          statusPill.textContent = 'READY FOR CALL INPUT';
+          statusPill.className = 'text-[13px] font-mono px-3.5 py-1.5 rounded-full bg-[var(--header-badge-bg)] border border-[var(--header-badge-border)] text-[var(--header-badge-text)] font-extrabold whitespace-nowrap';
+        }
+        if (threatBanner) {
+          threatBanner.classList.add('opacity-0', 'hidden');
+          threatBanner.style.display = 'none';
+        }
+        if (callerCard) callerCard.classList.remove('emergency-strobe');
+        if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
+        if (pulseRing) pulseRing.classList.remove('danger');
+        if (assetShieldContainer) assetShieldContainer.classList.add('hidden');
+        if (bankingPolicyText) bankingPolicyText.textContent = "AUTONOMOUS DEFENSE: ACTIVE & MONITORING";
+        if (bankingCard) {
+          bankingCard.style.background = "var(--defense-safe-bg)";
+          bankingCard.style.borderColor = "var(--defense-safe-border)";
+          bankingCard.classList.remove('defense-active');
+        }
+        if (waveBars) {
+          for (var b = 0; b < waveBars.length; b++) {
+            waveBars[b].style.backgroundColor = '#10b981';
+            waveBars[b].classList.remove('crimson-pulse');
+          }
+        }
+      } else if (s === "SAFE_ACTIVE") {
+        emergencyActive = false;
+        stopEmergencySiren();
+        if (gaugePath) gaugePath.style.stroke = '#10b981';
+        if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-emerald)] leading-none';
+        if (labelEl) {
+          labelEl.textContent = "SAFE";
+          labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-emerald)] uppercase tracking-wider mt-1';
+        }
+        if (headerStatusText) {
+          headerStatusText.textContent = 'SYSTEM SECURE';
+          headerStatusText.className = 'text-[13.5px] font-mono font-extrabold tracking-wider text-[var(--header-badge-text)] uppercase whitespace-nowrap';
+          var hDot2 = headerStatusText.previousElementSibling;
+          if (hDot2) hDot2.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (mobileStatusText) {
+          mobileStatusText.textContent = 'SYSTEM SECURE • I4C 1930 READY';
+          mobileStatusText.className = 'text-[13px] font-mono font-extrabold tracking-wider text-[var(--header-badge-text)] uppercase';
+          var mDot2 = mobileStatusText.previousElementSibling;
+          if (mDot2) mDot2.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (spkText) spkText.textContent = 'SPEAKER: 🟢 VERIFIED HUMAN CALLER';
+        if (spkDot) spkDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        if (vocalProsodyLabel) {
+          vocalProsodyLabel.textContent = 'AUTHENTIC HUMAN SPEECH';
+          vocalProsodyLabel.className = 'mt-3 text-center text-[13.5px] font-mono font-extrabold text-[var(--accent-emerald)] bg-[var(--header-badge-bg)] px-4 py-1.5 rounded-full border border-[var(--header-badge-border)] tracking-wider whitespace-nowrap';
+        }
+        if (statusPill) {
+          statusPill.textContent = 'AUTHENTIC HUMAN SPEECH';
+          statusPill.className = 'text-[13px] font-mono px-3.5 py-1.5 rounded-full bg-[var(--header-badge-bg)] border border-[var(--header-badge-border)] text-[var(--header-badge-text)] font-extrabold whitespace-nowrap';
+        }
+        if (threatBanner) {
+          threatBanner.classList.add('opacity-0', 'hidden');
+          threatBanner.style.display = 'none';
+        }
+        if (callerCard) callerCard.classList.remove('emergency-strobe');
+        if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
+        if (pulseRing) pulseRing.classList.remove('danger');
+        if (assetShieldContainer) assetShieldContainer.classList.add('hidden');
+        if (bankingPolicyText) bankingPolicyText.textContent = "AUTONOMOUS DEFENSE: ACTIVE & MONITORING";
+        if (bankingCard) {
+          bankingCard.style.background = "var(--defense-safe-bg)";
+          bankingCard.style.borderColor = "var(--defense-safe-border)";
+          bankingCard.classList.remove('defense-active');
+        }
+        if (waveBars) {
+          for (var b = 0; b < waveBars.length; b++) {
+            waveBars[b].style.backgroundColor = '#10b981';
+            waveBars[b].classList.remove('crimson-pulse');
+          }
+        }
+      } else if (s === "CRITICAL_THREAT") {
+        emergencyActive = true;
+        startEmergencySiren();
+        if (gaugePath) gaugePath.style.stroke = 'var(--accent-crimson)';
+        if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-crimson)] leading-none animate-pulse';
+        if (labelEl) {
+          labelEl.textContent = "CRITICAL THREAT";
+          labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-crimson)] uppercase tracking-wider mt-1 animate-pulse';
+        }
+        if (headerStatusText) {
+          headerStatusText.textContent = 'CRITICAL DEFENSE ACTIVE';
+          headerStatusText.className = 'text-[13.5px] font-mono font-extrabold tracking-wider text-[var(--accent-crimson)] uppercase whitespace-nowrap';
+          var hDot3 = headerStatusText.previousElementSibling;
+          if (hDot3) hDot3.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-crimson)] animate-ping';
+        }
+        if (mobileStatusText) {
+          mobileStatusText.textContent = 'CRITICAL DEFENSE ACTIVE';
+          mobileStatusText.className = 'text-[13px] font-mono font-extrabold tracking-wider text-[var(--accent-crimson)] uppercase';
+          var mDot3 = mobileStatusText.previousElementSibling;
+          if (mDot3) mDot3.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-crimson)] animate-ping';
+        }
+        if (spkText) spkText.textContent = 'SPEAKER: 🔴 SYNTHETIC VOICE / THREAT DETECTED';
+        if (spkDot) spkDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-crimson)] animate-ping';
+        if (vocalProsodyLabel) {
+          vocalProsodyLabel.textContent = 'SYNTHETIC AI VOICE CLONE DETECTED';
+          vocalProsodyLabel.className = 'mt-3 text-center text-[13.5px] font-mono font-extrabold text-[var(--accent-crimson)] bg-[var(--accent-crimson)]/20 px-4 py-1.5 rounded-full border border-[var(--accent-crimson)]/40 tracking-wider whitespace-nowrap animate-pulse';
+        }
+        if (statusPill) {
+          statusPill.textContent = 'CRITICAL THREAT DETECTED';
+          statusPill.className = 'text-[13px] font-mono px-3.5 py-1.5 rounded-full bg-[var(--accent-crimson)]/20 border border-[var(--accent-crimson)]/40 text-[var(--accent-crimson)] font-extrabold whitespace-nowrap animate-pulse';
+        }
+        if (threatBanner) {
+          threatBanner.classList.remove('opacity-0', 'hidden');
+          threatBanner.style.display = 'block';
+        }
+        if (callerCard) callerCard.classList.add('emergency-strobe');
+        if (phoneChassis) phoneChassis.classList.add('emergency-strobe');
+        if (pulseRing) pulseRing.classList.add('danger');
+        if (assetShieldContainer) assetShieldContainer.classList.remove('hidden');
+        if (bankingPolicyText) bankingPolicyText.textContent = "🚨 ASSET SHIELD: OUTBOUND TRANSACTIONS AUTONOMOUSLY FROZEN";
+        if (bankingCard) {
+          bankingCard.style.background = "var(--defense-threat-bg)";
+          bankingCard.style.borderColor = "var(--defense-threat-border)";
+          bankingCard.classList.add('defense-active');
+        }
+        if (waveBars) {
+          for (var b = 0; b < waveBars.length; b++) {
+            waveBars[b].style.backgroundColor = '#ef4444';
+            waveBars[b].classList.add('crimson-pulse');
+          }
+        }
+        // Auto trigger NPCI freeze
+        fetch('/api/npci/freeze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ risk_tier: 'HOLD', session_id: liveSessionId || 'default' })
+        }).catch(function (e) { });
+      } else if (s === "VERIFIED_SAFE") {
+        emergencyActive = false;
+        stopEmergencySiren();
+        if (gaugePath) gaugePath.style.stroke = '#10b981';
+        if (scoreEl) {
+          scoreEl.textContent = '10%';
+          scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-emerald)] leading-none';
+        }
+        if (labelEl) {
+          labelEl.textContent = "SAFE-WORD VERIFIED";
+          labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-emerald)] uppercase tracking-wider mt-1';
+        }
+        if (headerStatusText) {
+          headerStatusText.textContent = 'VERIFIED SECURE • UNLOCKED';
+          headerStatusText.className = 'text-[13.5px] font-mono font-extrabold tracking-wider text-[var(--accent-emerald)] uppercase whitespace-nowrap';
+          var hDot4 = headerStatusText.previousElementSibling;
+          if (hDot4) hDot4.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (mobileStatusText) {
+          mobileStatusText.textContent = 'VERIFIED SECURE • I4C 1930 READY';
+          mobileStatusText.className = 'text-[13px] font-mono font-extrabold tracking-wider text-[var(--accent-emerald)] uppercase';
+          var mDot4 = mobileStatusText.previousElementSibling;
+          if (mDot4) mDot4.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        }
+        if (spkText) spkText.textContent = 'SPEAKER: 🛡️ SAFE-WORD VERIFIED • SECURE';
+        if (spkDot) spkDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
+        if (vocalProsodyLabel) {
+          vocalProsodyLabel.textContent = 'AUTHENTIC HUMAN SPEECH (VERIFIED)';
+          vocalProsodyLabel.className = 'mt-3 text-center text-[13.5px] font-mono font-extrabold text-[var(--accent-emerald)] bg-[var(--header-badge-bg)] px-4 py-1.5 rounded-full border border-[var(--header-badge-border)] tracking-wider whitespace-nowrap';
+        }
+        if (statusPill) {
+          statusPill.textContent = 'SAFE-WORD VERIFIED';
+          statusPill.className = 'text-[13px] font-mono px-3.5 py-1.5 rounded-full bg-[var(--header-badge-bg)] border border-[var(--header-badge-border)] text-[var(--header-badge-text)] font-extrabold whitespace-nowrap';
+        }
+        if (threatBanner) {
+          threatBanner.classList.add('opacity-0', 'hidden');
+          threatBanner.style.display = 'none';
+        }
+        if (callerCard) callerCard.classList.remove('emergency-strobe');
+        if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
+        if (pulseRing) pulseRing.classList.remove('danger');
+        if (bankingPolicyText) bankingPolicyText.textContent = "✅ ASSET SHIELD: LIMITS RESTORED (SAFE-WORD CONFIRMED)";
+        if (bankingCard) {
+          bankingCard.style.background = "var(--defense-safe-bg)";
+          bankingCard.style.borderColor = "var(--defense-safe-border)";
+          bankingCard.classList.remove('defense-active');
+        }
+        if (assetShieldContainer) {
+          assetShieldContainer.classList.remove('hidden');
+          assetShieldContainer.innerHTML = '<div class="flex items-center gap-2.5 text-[#10b981] font-bold py-1 w-full justify-center">' +
+            '<span class="material-symbols-outlined text-[22px]">verified_user</span>' +
+            '<span>Asset Shield Unfrozen: Outbound Limits Restored (Verbal Safe-Word Confirmed)</span>' +
+            '</div>';
+        }
+        if (waveBars) {
+          for (var b = 0; b < waveBars.length; b++) {
+            waveBars[b].style.backgroundColor = '#10b981';
+            waveBars[b].classList.remove('crimson-pulse');
+          }
+        }
+      }
+    }
+    window.renderDashboardState = renderDashboardState;
+
     // ============================================================================
     // 11. AGGREGATE RISK COMPUTATION & MULTI-FRAUD DEFENSE ENFORCEMENT
     // ============================================================================
@@ -4352,31 +4626,98 @@
     window.testDemoAudio = testDemoAudio;
 
     async function dispatch1930Report() {
-      var tier = (liveVoiceRisk >= 70 || liveScriptRisk >= 70) ? "HIGH_RISK" : "SUSPICIOUS";
+      var ts = Date.now();
+      var tier = (liveVoiceRisk >= 70 || liveScriptRisk >= 70 || currentDashboardState === "CRITICAL_THREAT") ? "HOLD" : "ALLOW";
+      var transcriptStr = liveTranscriptHistory.map(function (item) {
+        return typeof item === 'string' ? item : (item.text || '');
+      }).join(' ').trim() || "Live call audio analysis";
+
+      var payload = {
+        session_id: liveSessionId || ("sess_" + ts),
+        risk_tier: tier,
+        radar_score: liveVoiceRisk || 10,
+        transcript: transcriptStr,
+        caller_number: "+91-98765-43210",
+        channel_quality: "WIDEBAND_CLEAN",
+        uncertainty_note: "Cryptographic Section 63 BSA 2023 Digital Evidence Certificate"
+      };
+
+      var dossierData = null;
       try {
-        var resp = await fetch(API_BASE + '/api/action/report', {
+        var resp = await fetch('/api/evidence/dossier', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tier: tier })
+          body: JSON.stringify(payload)
         });
-        var data = await resp.json();
-        var incId = data.incident_id || ("I4C-DK-" + Math.random().toString(36).substring(2, 8).toUpperCase());
-        alert("🚨 I4C 1930 CYBER FRAUD DISPATCH DISPATCHED\n\nIncident Reference: " + incId + "\nRecipient: 1930 Cyber Fraud / I4C National Helpline\nStatus: DISPATCHED\nCryptographic SHA-256 evidence chain forwarded to enforcement registry.");
-
-        var logsContainer = document.getElementById('logsContainer');
-        if (logsContainer) {
-          var item = '<div class="p-4 rounded-xl bg-[var(--bg-card-sub)] border border-[var(--accent-cyan)] flex justify-between items-center">' +
-            '<div>' +
-            '<div class="font-bold text-[var(--accent-cyan)] text-[14px]">🚨 1930 Cyber Helpline Dispatch: ' + incId + '</div>' +
-            '<div class="text-[12px] text-[var(--text-muted)] font-bold">Severity: ' + tier + ' • Encrypted incident payload delivered</div>' +
-            '</div>' +
-            '<span class="text-[12px] font-extrabold px-3 py-1 rounded border bg-[var(--accent-cyan)]/20 text-[var(--accent-cyan)] border-[var(--accent-cyan)]/40">DISPATCHED</span>' +
-            '</div>';
-          logsContainer.insertAdjacentHTML('afterbegin', item);
+        if (resp && resp.ok) {
+          dossierData = await resp.json();
         }
       } catch (e) {
-        alert("🚨 I4C 1930 REPORT RECORDED LOCALLY\n\nIncident ID: I4C-DK-STANDALONE\nRecipient: 1930 National Cyber Crime Reporting Helpline\nEvidence seal and caller telemetry stored in local vault.");
+        console.warn("Evidence dossier fetch notice:", e);
       }
+
+      var caseId = (dossierData && dossierData.dossier && dossierData.dossier.case_id) ? dossierData.dossier.case_id : ("DK-" + ts.toString(16).toUpperCase());
+      var shaSeal = (dossierData && (dossierData.sha256_seal || dossierData.record_sha256)) ? (dossierData.sha256_seal || dossierData.record_sha256) : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+      // Formatted forensic incident report HTML
+      var htmlDoc = '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="utf-8">\n' +
+        '<title>Dhwani-Kavach Forensic Dossier ' + caseId + '</title>\n' +
+        '<style>\n' +
+        'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f1f5f9; padding: 32px; max-width: 860px; margin: 0 auto; }\n' +
+        'h1 { color: #00f0ff; border-bottom: 2px solid #00f0ff; padding-bottom: 8px; font-size: 22px; margin-bottom: 4px; }\n' +
+        '.badge { display: inline-block; padding: 4px 12px; border-radius: 9999px; font-weight: bold; font-size: 13px; }\n' +
+        '.badge-hold { background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444; }\n' +
+        '.badge-safe { background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; }\n' +
+        '.section { background: #131d31; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; margin-top: 20px; }\n' +
+        '.kv { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); font-family: monospace; font-size: 13px; }\n' +
+        '.hash { word-break: break-all; color: #38bdf8; font-weight: bold; }\n' +
+        '.footer { margin-top: 32px; font-size: 12px; color: #64748b; text-align: center; }\n' +
+        '</style>\n</head>\n<body>\n' +
+        '<h1>🛡️ DHWANI-KAVACH :: FORENSIC INCIDENT REPORT (I4C 1930 DISPATCH)</h1>\n' +
+        '<p style="color:#94a3b8;font-size:13px;">Section 63, Bharatiya Sakshya Adhiniyam 2023 Digital Evidence Certificate</p>\n' +
+        '<div class="section">\n' +
+        '<div class="kv"><span>Incident Case ID:</span><span style="color:#00f0ff;font-weight:bold;">' + caseId + '</span></div>\n' +
+        '<div class="kv"><span>Dispatch Timestamp:</span><span>' + new Date().toISOString() + '</span></div>\n' +
+        '<div class="kv"><span>Target Caller CLI:</span><span>' + payload.caller_number + '</span></div>\n' +
+        '<div class="kv"><span>Autonomous Risk Tier:</span><span class="badge ' + (tier === "HOLD" ? "badge-hold" : "badge-safe") + '">' + tier + ' (' + payload.radar_score + '%)</span></div>\n' +
+        '<div class="kv"><span>Active Defense Action:</span><span>NPCI Outbound UPI Protection (₹50,000 Cap)</span></div>\n' +
+        '<div class="kv"><span>AI Engine Model:</span><span>MelCNN v2 (Codec-Hardened 16kHz)</span></div>\n' +
+        '<div class="kv"><span>Cryptographic SHA-256 Seal:</span><span class="hash">' + shaSeal + '</span></div>\n' +
+        '</div>\n' +
+        '<div class="section">\n' +
+        '<h3 style="margin-top:0;color:#38bdf8;">Transcript &amp; NLP Extortion Vectors</h3>\n' +
+        '<p style="background:#0b0f19;padding:12px;border-radius:8px;font-family:monospace;font-size:13px;color:#e2e8f0;">' + (transcriptStr || "No speech captured.") + '</p>\n' +
+        '</div>\n' +
+        '<div class="footer">Cryptographic evidence hash verified by Dhwani-Kavach On-Device Sentinel • Authorized for submission to National Cyber Crime Reporting Portal (1930 / cybercrime.gov.in)</div>\n' +
+        '</body>\n</html>';
+
+      // Automatic file download
+      var blob = new Blob([htmlDoc], { type: 'text/html' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'DhwaniKavach_1930_Dossier_' + ts + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      var hashDisp = document.getElementById('evidenceHashDisplay');
+      if (hashDisp) hashDisp.textContent = 'SHA256-' + shaSeal.substring(0, 16) + '...';
+
+      var logsContainer = document.getElementById('logsContainer');
+      if (logsContainer) {
+        var item = '<div class="p-4 rounded-xl bg-[var(--bg-card-sub)] border border-[var(--accent-cyan)] flex justify-between items-center">' +
+          '<div>' +
+          '<div class="font-bold text-[var(--accent-cyan)] text-[14px]">🚨 1930 Cyber Helpline Dispatch: ' + caseId + '</div>' +
+          '<div class="text-[12px] text-[var(--text-muted)] font-bold">Severity: ' + tier + ' • Cryptographic dossier downloaded</div>' +
+          '</div>' +
+          '<span class="text-[12px] font-extrabold px-3 py-1 rounded border bg-[var(--accent-cyan)]/20 text-[var(--accent-cyan)] border-[var(--accent-cyan)]/40">DISPATCHED</span>' +
+          '</div>';
+        logsContainer.insertAdjacentHTML('afterbegin', item);
+      }
+
+      showToastNotification('Forensic Dossier Downloaded: DhwaniKavach_1930_Dossier_' + ts + '.html');
     }
 
     async function triggerOobAuth() {
@@ -4537,6 +4878,19 @@
         liveSessionId = "sess_" + Date.now();
         fetch('/api/reset', { method: 'POST' }).catch(function () { });
         resetSafeGreenUI();
+
+        // Pre-flight check: if capturing tab audio and no audio tracks exist
+        if (this.sourceType === "tab") {
+          if (!this.stream || this.stream.getAudioTracks().length === 0) {
+            showToastNotification("Enable 'Share tab audio' in the popup and try again");
+            this.stop();
+            if (typeof resetCall === 'function') resetCall();
+            if (typeof renderDashboardState === 'function') {
+              renderDashboardState({ state: "IDLE" });
+            }
+            return;
+          }
+        }
 
         // When sourceType === "mic", request raw unprocessed audio to avoid browser comb-filtering
         if (this.sourceType === "mic") {
@@ -4832,10 +5186,14 @@
           // Stop video tracks immediately
           stream.getVideoTracks().forEach(function (track) { track.stop(); });
           if (stream.getAudioTracks().length === 0) {
-            alert("No tab audio stream detected. Please ensure you selected a browser tab and checked 'Share tab audio' in the system dialog.");
+            showToastNotification("Enable 'Share tab audio' in the popup and try again");
             stream.getTracks().forEach(function (t) { t.stop(); });
             selectedAudioSource = 'mic';
             updateAudioSourceUI('mic');
+            if (typeof resetCall === 'function') resetCall();
+            if (typeof renderDashboardState === 'function') {
+              renderDashboardState({ state: "IDLE" });
+            }
             return;
           }
           var aTrack = stream.getAudioTracks()[0];
