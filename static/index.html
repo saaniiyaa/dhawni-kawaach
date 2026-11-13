@@ -959,6 +959,24 @@ button:active:not(:disabled),
             <div id="threatVectorsChips" class="flex flex-wrap items-center justify-center gap-1.5 mt-2"></div>
           </div>
 
+          <!-- 2-Button Audio Source Switcher (Live Mic vs Live AI Call Tab) -->
+          <div id="audioSourceSwitcher" class="w-full max-w-[340px] flex flex-col gap-1.5 my-2 px-1 relative z-20">
+            <div class="flex items-center justify-between px-1">
+              <span class="text-[11px] font-mono font-extrabold tracking-wider text-[var(--text-muted)] uppercase flex items-center gap-1">
+                <span class="material-symbols-outlined text-[14px] text-[var(--accent-cyan)]">tune</span> AUDIO SOURCE
+              </span>
+              <span id="activeSourceBadge" class="text-[10px] font-mono font-extrabold text-[var(--accent-cyan)] uppercase">🎙️ LIVE MIC</span>
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <button id="btnSourceMic" type="button" onclick="selectAudioSource('mic')" class="flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] shadow-[0_0_12px_rgba(6,182,212,0.3)] text-center" title="Captures microphone with noiseSuppression & autoGainControl off to preserve natural room tone">
+                <span>🎙️ Live Mic (Human Control)</span>
+              </button>
+              <button id="btnSourceTab" type="button" onclick="selectAudioSource('tab')" class="flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--bg-card-sub)] border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-cyan)]/50 text-center" title="Captures system/tab audio from AI call tab">
+                <span>🖥️ Capture AI Call Tab (Live AI Test)</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Incoming Action Buttons -->
           <div id="incomingActions" class="flex justify-around w-full max-w-[280px] mt-2 relative z-20">
             <button id="btnDecline" type="button" onclick="resetCall()" class="flex flex-col items-center gap-2 group cursor-pointer transition-transform active:scale-95" aria-label="Decline Call">
@@ -1040,6 +1058,16 @@ button:active:not(:disabled),
               </div>
             </div>
             <div id="vocalProsodyLabel" class="mt-3 text-center text-[13px] font-mono font-extrabold text-[var(--accent-emerald)] bg-[var(--header-badge-bg)] px-4 py-1.5 rounded-full border border-[var(--header-badge-border)] tracking-wider whitespace-nowrap">STANDBY / MONITORING</div>
+            
+            <!-- Channel Integrity & Uncertainty Calibration Pill -->
+            <div id="channelIntegrityCalibration" class="mt-2.5 w-full flex flex-col items-center gap-1 px-1">
+              <span id="channelQualityPill" class="text-[11px] font-mono font-extrabold px-3 py-1 rounded-full border tracking-wide uppercase transition-all bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] shadow-[0_0_10px_rgba(6,182,212,0.25)]">
+                SIGNAL: WIDEBAND CLEAN
+              </span>
+              <p id="channelUncertaintyNote" class="text-[11px] font-mono text-[var(--text-muted)] text-center font-bold tracking-tight">
+                High neural certainty · Direct acoustic match
+              </p>
+            </div>
           </div>
 
           <!-- Live Acoustic Spectral Matrix (FFT) -->
@@ -3367,6 +3395,55 @@ async function checkBackendHealth() {
     return false;
 }
 
+// ============================================================================
+// CHANNEL INTEGRITY & UNCERTAINTY CALIBRATION UI
+// ============================================================================
+function updateChannelCalibrationUI(quality, note) {
+    var pillEl = document.getElementById('channelQualityPill');
+    var noteEl = document.getElementById('channelUncertaintyNote');
+    if (!pillEl && !noteEl) return;
+
+    var isDegraded = false;
+    var qualityText = "SIGNAL: WIDEBAND CLEAN";
+    if (quality) {
+        var qUpper = String(quality).toUpperCase();
+        if (qUpper.indexOf("8K") > -1 || qUpper.indexOf("DEGRADED") > -1 || qUpper.indexOf("NOISY") > -1) {
+            isDegraded = true;
+            qualityText = "SIGNAL: 8kHz / NOISY DEGRADED";
+        } else if (qUpper.indexOf("WIDEBAND") > -1 || qUpper.indexOf("CLEAN") > -1) {
+            isDegraded = false;
+            qualityText = "SIGNAL: WIDEBAND CLEAN";
+        } else {
+            qualityText = "SIGNAL: " + quality;
+        }
+    }
+
+    if (pillEl) {
+        pillEl.textContent = qualityText;
+        if (isDegraded) {
+            pillEl.className = "text-[11px] font-mono font-extrabold px-3 py-1 rounded-full border tracking-wide uppercase transition-all bg-[var(--accent-amber)]/20 border-[var(--accent-amber)] text-[var(--accent-amber)] shadow-[0_0_10px_rgba(245,158,11,0.25)]";
+        } else {
+            pillEl.className = "text-[11px] font-mono font-extrabold px-3 py-1 rounded-full border tracking-wide uppercase transition-all bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] shadow-[0_0_10px_rgba(6,182,212,0.25)]";
+        }
+    }
+
+    if (noteEl) {
+        var noteText = note;
+        if (!noteText) {
+            noteText = isDegraded
+                ? "Degraded channel bandwidth · Advise Safe-Word / Out-of-Band Callback"
+                : "High neural certainty · Direct acoustic match";
+        }
+        noteEl.textContent = noteText;
+        if (isDegraded) {
+            noteEl.className = "text-[11px] font-mono text-[var(--accent-amber)] text-center font-bold tracking-tight";
+        } else {
+            noteEl.className = "text-[11px] font-mono text-[var(--text-muted)] text-center font-bold tracking-tight";
+        }
+    }
+}
+window.updateChannelCalibrationUI = updateChannelCalibrationUI;
+
 async function sendAudioChunkToBackend(blob) {
     if (!isBackendOnline || isScoringPending) return;
     isScoringPending = true;
@@ -3379,6 +3456,9 @@ async function sendAudioChunkToBackend(blob) {
         if (resp.ok) {
             var data = await resp.json();
             if (!data.error && callActive && !isManualSimulation) {
+                if (data.channel_quality || data.uncertainty_note) {
+                    updateChannelCalibrationUI(data.channel_quality, data.uncertainty_note);
+                }
                 var cnnProb = data.call_p !== undefined ? data.call_p : data.window_p;
                 var cnnRisk = Math.round(cnnProb * 100);
 
@@ -3442,6 +3522,10 @@ async function inspectAudioFile(file) {
             alert("Analysis notice: " + data.error);
             if (uploadLabel) uploadLabel.textContent = "Upload Voice Note to Inspect";
             return;
+        }
+
+        if (data.channel_quality || data.uncertainty_note) {
+            updateChannelCalibrationUI(data.channel_quality, data.uncertainty_note);
         }
 
         if (!callActive) acceptCall();
@@ -3568,9 +3652,193 @@ function scanManualScript() {
 }
 
 // ============================================================================
-// 14. CALL ACTIONS & TRANSITIONS (ANSWER / DECLINE / END CALL)
+// 14. AUDIO SOURCE SWITCHER & REAL-TIME 1-SECOND CHUNK ENGINE
 // ============================================================================
-function acceptCall() {
+var selectedAudioSource = 'mic'; // 'mic' | 'tab'
+
+function updateAudioSourceUI(source) {
+    var btnMic = document.getElementById('btnSourceMic');
+    var btnTab = document.getElementById('btnSourceTab');
+    var badge = document.getElementById('activeSourceBadge');
+
+    if (source === 'tab') {
+        if (btnTab) {
+            btnTab.className = "flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] shadow-[0_0_12px_rgba(6,182,212,0.3)] text-center";
+        }
+        if (btnMic) {
+            btnMic.className = "flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--bg-card-sub)] border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-cyan)]/50 text-center";
+        }
+        if (badge) {
+            badge.textContent = "🖥️ TAB AUDIO";
+            badge.className = "text-[10px] font-mono font-extrabold text-[var(--accent-cyan)] uppercase";
+        }
+    } else {
+        if (btnMic) {
+            btnMic.className = "flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--accent-cyan)]/20 border-[var(--accent-cyan)] text-[var(--accent-cyan)] shadow-[0_0_12px_rgba(6,182,212,0.3)] text-center";
+        }
+        if (btnTab) {
+            btnTab.className = "flex items-center justify-center gap-1 py-2 px-1.5 rounded-xl text-[11px] font-mono font-extrabold border transition-all cursor-pointer shadow-sm active:scale-95 bg-[var(--bg-card-sub)] border-[var(--border-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-cyan)]/50 text-center";
+        }
+        if (badge) {
+            badge.textContent = "🎙️ LIVE MIC";
+            badge.className = "text-[10px] font-mono font-extrabold text-[var(--accent-cyan)] uppercase";
+        }
+    }
+}
+window.updateAudioSourceUI = updateAudioSourceUI;
+
+async function selectAudioSource(source) {
+    selectedAudioSource = source;
+    updateAudioSourceUI(source);
+
+    if (source === 'tab') {
+        await startTabAudioCapture();
+    } else {
+        await startMicAudioCapture();
+    }
+}
+window.selectAudioSource = selectAudioSource;
+
+async function startTabAudioCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        alert("Tab audio capture via getDisplayMedia is not supported in this browser. Please use Chrome or Edge.");
+        selectedAudioSource = 'mic';
+        updateAudioSourceUI('mic');
+        return;
+    }
+    try {
+        var stream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: {
+                systemAudio: "include",
+                suppressLocalAudioPlayback: false
+            },
+            selfBrowserSurface: "exclude"
+        });
+
+        // 1. Stop video tracks immediately
+        stream.getVideoTracks().forEach(function(track) {
+            track.stop();
+        });
+
+        // 2. Alert cleanly if getAudioTracks().length === 0
+        if (stream.getAudioTracks().length === 0) {
+            alert("No tab audio stream detected. Please ensure you selected a browser tab and checked 'Share tab audio' in the system dialog.");
+            stream.getTracks().forEach(function(t) { t.stop(); });
+            selectedAudioSource = 'mic';
+            updateAudioSourceUI('mic');
+            return;
+        }
+
+        var audioTrack = stream.getAudioTracks()[0];
+        audioTrack.onended = function() {
+            console.info("Tab audio stream ended");
+            if (callActive) {
+                selectedAudioSource = 'mic';
+                updateAudioSourceUI('mic');
+                startMicAudioCapture();
+            }
+        };
+
+        attachLiveStream(stream, 'tab');
+    } catch (err) {
+        if (err.name !== 'NotAllowedError') {
+            console.error("Tab capture error:", err);
+            alert("Could not capture tab audio: " + (err.message || err));
+        }
+        selectedAudioSource = 'mic';
+        updateAudioSourceUI('mic');
+    }
+}
+window.startTabAudioCapture = startTabAudioCapture;
+
+async function startMicAudioCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn("getUserMedia is not available.");
+        return;
+    }
+    try {
+        var stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                noiseSuppression: false,
+                autoGainControl: false
+            }
+        });
+        attachLiveStream(stream, 'mic');
+    } catch (err) {
+        console.warn("Mic access notice:", err);
+    }
+}
+window.startMicAudioCapture = startMicAudioCapture;
+
+function attachLiveStream(stream, source) {
+    selectedAudioSource = source;
+    updateAudioSourceUI(source);
+
+    if (!callActive) {
+        acceptCall(stream);
+        return;
+    }
+
+    if (liveAudioStream && liveAudioStream !== stream) {
+        try { liveAudioStream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
+    }
+
+    liveAudioStream = stream;
+    stopFallbackWaveform();
+    setupWebAudioAnalyser(stream);
+    startRecorderChunkLoop(stream);
+}
+
+function startRecorderChunkLoop(stream) {
+    if (mediaRecorder) {
+        try { mediaRecorder.stop(); } catch(e) {}
+        mediaRecorder = null;
+    }
+    if (!callActive || isManualSimulation || !stream) return;
+
+    try {
+        var mime = '';
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+            mime = 'audio/webm;codecs=opus';
+        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+            mime = 'audio/webm';
+        }
+        var opts = mime ? { mimeType: mime } : {};
+
+        function recordChunk() {
+            if (!callActive || isManualSimulation || !liveAudioStream) return;
+            var currentRec = new MediaRecorder(liveAudioStream, opts);
+            var chunks = [];
+            currentRec.ondataavailable = function(e) {
+                if (e.data && e.data.size > 0) chunks.push(e.data);
+            };
+            currentRec.onstop = function() {
+                if (chunks.length > 0 && callActive && !isManualSimulation) {
+                    var fullBlob = new Blob(chunks, { type: currentRec.mimeType || 'audio/webm' });
+                    sendAudioChunkToBackend(fullBlob);
+                }
+                if (callActive && !isManualSimulation && liveAudioStream) {
+                    setTimeout(recordChunk, 40);
+                }
+            };
+            mediaRecorder = currentRec;
+            currentRec.start();
+            setTimeout(function() {
+                if (currentRec.state === 'recording') {
+                    try { currentRec.stop(); } catch(e) {}
+                }
+            }, 1000); // 1-second MediaRecorder chunk loop to /api/score
+        }
+
+        recordChunk();
+    } catch (mErr) {
+        console.warn("Recorder error:", mErr);
+    }
+}
+window.startRecorderChunkLoop = startRecorderChunkLoop;
+
+function acceptCall(existingStream) {
     if (callActive) return;
     callActive = true;
     isManualSimulation = false;
@@ -3626,9 +3894,23 @@ function acceptCall() {
 
     startFallbackWaveform();
 
-    if (window.appSettings && window.appSettings.liveMic) {
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-            navigator.mediaDevices.getUserMedia({ audio: true })
+    if (existingStream) {
+        liveAudioStream = existingStream;
+        stopFallbackWaveform();
+        setupWebAudioAnalyser(existingStream);
+        startRecorderChunkLoop(existingStream);
+        speechRecognition = startSpeechRecognition();
+    } else if (window.appSettings && window.appSettings.liveMic) {
+        if (selectedAudioSource === 'tab') {
+            startTabAudioCapture();
+        } else {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                })
                 .then(function(stream) {
                     if (!callActive) {
                         stream.getTracks().forEach(function(t) { t.stop(); });
@@ -3637,44 +3919,12 @@ function acceptCall() {
                     liveAudioStream = stream;
                     stopFallbackWaveform();
                     setupWebAudioAnalyser(stream);
-
-                    // If backend is online, send clean 4-second audio chunks to neural engine
-                    try {
-                        var mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
-                        var opts = mime ? { mimeType: mime } : {};
-                        
-                        function recordChunk() {
-                            if (!callActive || isManualSimulation || !liveAudioStream) return;
-                            var currentRec = new MediaRecorder(liveAudioStream, opts);
-                            var chunks = [];
-                            currentRec.ondataavailable = function(e) {
-                                if (e.data && e.data.size > 0) chunks.push(e.data);
-                            };
-                            currentRec.onstop = function() {
-                                if (chunks.length > 0 && callActive && !isManualSimulation) {
-                                    var fullBlob = new Blob(chunks, { type: currentRec.mimeType || 'audio/webm' });
-                                    sendAudioChunkToBackend(fullBlob);
-                                }
-                                if (callActive && !isManualSimulation && liveAudioStream) {
-                                    setTimeout(recordChunk, 40);
-                                }
-                            };
-                            mediaRecorder = currentRec;
-                            currentRec.start();
-                            setTimeout(function() {
-                                if (currentRec.state === 'recording') {
-                                    try { currentRec.stop(); } catch(e) {}
-                                }
-                            }, 4000);
-                        }
-                        recordChunk();
-                    } catch (mErr) {
-                        console.warn("Recorder error:", mErr);
-                    }
+                    startRecorderChunkLoop(stream);
                 })
                 .catch(function(err) {
                     console.info('Live mic notice:', err);
                 });
+            }
         }
         speechRecognition = startSpeechRecognition();
     }
@@ -3726,6 +3976,7 @@ function resetCall() {
         } catch (e) {}
         liveAudioStream = null;
     }
+    updateChannelCalibrationUI("WIDEBAND CLEAN", "High neural certainty · Direct acoustic match");
 
     liveTranscriptHistory = [];
     activeInterimText = '';

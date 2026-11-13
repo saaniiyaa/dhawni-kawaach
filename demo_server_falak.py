@@ -166,8 +166,26 @@ def api_score():
             return jsonify({"error": "empty audio payload"})
 
         y = decode_to_wav(raw_bytes, suffix)
-        if len(y) < SR:            # less than 1 second of audio
+        if len(y) < int(0.75 * SR):
             return jsonify({"error": "too short (minimum 1 second of audio required)"})
+        if len(y) < SR:
+            y = np.pad(y, (0, SR - len(y)))
+
+        # Channel integrity & bandwidth analysis
+        fft_vals = np.abs(np.fft.rfft(y))
+        freqs = np.fft.rfftfreq(len(y), 1.0 / SR)
+        high_band = fft_vals[freqs >= 3800]
+        low_band = fft_vals[(freqs >= 300) & (freqs < 3800)]
+        high_energy = float(np.sum(high_band ** 2)) if len(high_band) > 0 else 0.0
+        low_energy = float(np.sum(low_band ** 2)) if len(low_band) > 0 else 1e-9
+        hf_ratio = high_energy / max(low_energy, 1e-9)
+
+        if hf_ratio < 0.012:
+            channel_quality = "8kHz / NOISY DEGRADED"
+            uncertainty_note = "Degraded channel bandwidth · Advise Safe-Word / Out-of-Band Callback"
+        else:
+            channel_quality = "WIDEBAND CLEAN"
+            uncertainty_note = "High neural certainty · Direct acoustic match"
             
         vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean())
         voiced = vfrac * SECONDS
@@ -202,6 +220,8 @@ def api_score():
             "allow_sensitive": pol["allow_sensitive_action"],
             "model": MODEL_NAME,
             "acoustic": acoustic,
+            "channel_quality": channel_quality,
+            "uncertainty_note": uncertainty_note,
         })
     except Exception as e:
         return jsonify({"error": str(e)})

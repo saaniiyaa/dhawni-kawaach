@@ -108,6 +108,13 @@ try:
 except ImportError:
     print("CORS: flask-cors not installed - other devices may be blocked")
 
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    return response
+
 
 def score_audio(y):
     piece = fix_length(np.asarray(y, dtype=np.float32), int(SECONDS * SR))
@@ -141,8 +148,8 @@ def reset():
 
 @app.route("/api/ping", methods=["GET", "POST"])
 def ping():
-    return jsonify({"ok": True, "status": "ok", "online": True,
-                    "backend": "online", "model": MODEL_NAME})
+    return jsonify({"ok": True, "status": "ONLINE", "online": True,
+                    "app": "DHWANI-KAVACH", "backend": "online", "model": MODEL_NAME})
 
 @app.route("/api/context", methods=["POST"])
 def context():
@@ -176,7 +183,8 @@ def context():
         notes.append("Caller claims to be from a bank but the number is not the "
                      "bank's official helpline - classic impersonation pattern")
         level = "danger"
-    return jsonify({"number": number, "level": level, "notes": notes})
+    trust_score = 38 if level == "danger" else (62 if level == "warning" else 94)
+    return jsonify({"number": number, "level": level, "notes": notes, "trust_score": trust_score})
 
 
 
@@ -251,8 +259,27 @@ def api_score():
         if not raw_bytes:
             return jsonify({"error": "no audio received"})
         y = decode_to_wav(raw_bytes, suffix)       
-        if len(y) < SR:
+        if len(y) < int(0.75 * SR):
             return jsonify({"error": "too short"})
+        if len(y) < SR:
+            y = np.pad(y, (0, SR - len(y)))
+        
+        # Channel integrity & bandwidth analysis (8kHz / narrowband vs wideband)
+        fft_vals = np.abs(np.fft.rfft(y))
+        freqs = np.fft.rfftfreq(len(y), 1.0 / SR)
+        high_band = fft_vals[freqs >= 3800]
+        low_band = fft_vals[(freqs >= 300) & (freqs < 3800)]
+        high_energy = float(np.sum(high_band ** 2)) if len(high_band) > 0 else 0.0
+        low_energy = float(np.sum(low_band ** 2)) if len(low_band) > 0 else 1e-9
+        hf_ratio = high_energy / max(low_energy, 1e-9)
+
+        if hf_ratio < 0.012:
+            channel_quality = "8kHz / NOISY DEGRADED"
+            uncertainty_note = "Degraded channel bandwidth · Advise Safe-Word / Out-of-Band Callback"
+        else:
+            channel_quality = "WIDEBAND CLEAN"
+            uncertainty_note = "High neural certainty · Direct acoustic match"
+
         vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean())
         if vfrac < float(CAL.get("vad_min", 0.0)):
             r = engine.update(0.5, 0.0)
@@ -274,6 +301,8 @@ def api_score():
             "step_up": pol["step_up"],
             "allow_sensitive": pol["allow_sensitive_action"],
             "model": MODEL_NAME,
+            "channel_quality": channel_quality,
+            "uncertainty_note": uncertainty_note,
         })
     except Exception as e:
         return jsonify({"error": str(e)})
