@@ -57,15 +57,48 @@ SESSION_STATE = {
 }
 SESSIONS = {}
 
+def get_session_data(session_id=None):
+    sid = session_id or "default"
+    if sid not in SESSIONS:
+        SESSIONS[sid] = {
+            "engine": TemporalEngine(EngineConfig(
+                theta_lo=float(CAL.get("theta_lo", 0.62)),
+                theta_hi=float(CAL.get("theta_hi", 0.90)),
+            )),
+            "ema": 0.0,
+            "ai_streak": 0,
+            "human_streak": 0,
+            "latched_hold": False,
+        }
+    return SESSIONS[sid]
+
 def get_session_engine(session_id=None):
-    if not session_id:
-        return engine
-    if session_id not in SESSIONS:
-        SESSIONS[session_id] = TemporalEngine(EngineConfig(
-            theta_lo=float(CAL.get("theta_lo", 0.62)),
-            theta_hi=float(CAL.get("theta_hi", 0.90)),
-        ))
-    return SESSIONS[session_id]
+    return get_session_data(session_id)["engine"]
+
+def transcribe_chunk_bytes(wav_bytes):
+    """Fast backend chunk transcription with strict 1.2s timeout."""
+    if not wav_bytes or len(wav_bytes) < 400:
+        return ""
+    result = [""]
+
+    def _worker():
+        try:
+            import speech_recognition as sr_mod
+            import io
+            r = sr_mod.Recognizer()
+            with sr_mod.AudioFile(io.BytesIO(wav_bytes)) as source:
+                audio = r.record(source)
+            text = r.recognize_google(audio, language="en-IN")
+            if text:
+                result[0] = str(text).strip()
+        except Exception:
+            pass
+
+    import threading
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=1.2)
+    return result[0]
 if CAL:
     print(f"calibration: loaded {_CAL_PATH} "
           f"(vad_min={CAL.get('vad_min')}, bias={CAL.get('logit_bias')}, "
@@ -323,7 +356,9 @@ def api_score():
         if len(y) < SR:
             y = np.pad(y, (0, SR - len(y)))
 
-        sess_engine = get_session_engine(session_id)
+        sess_data = get_session_data(session_id)
+        sess_engine = sess_data["engine"]
+        prev_ema = float(sess_data.get("ema", 0.0))
         chunk_dur = len(y) / SR
         vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean()) if len(y) >= int(SECONDS * SR) else float(energy_vad(y).mean())
         vad_min = float(CAL.get("vad_min", 0.25))
@@ -345,24 +380,72 @@ def api_score():
 
         calib = evaluate_channel_and_calibrate(y, SR, raw_ai_prob)
         cal_prob = calib["calibrated_prob"]
-        cal_tier = calib["tier"]
-        SESSION_STATE["prev_risk"] = cal_prob
-        print(f"[LIVE SCORE] chunk -> prob={cal_prob:.4f} tier={cal_tier} channel={calib['channel_quality']} note={calib['uncertainty_note']}", flush=True)
-        pol = policy_for("SAFE" if cal_tier == "ALLOW" else ("HIGH_RISK" if cal_tier == "HOLD" else "SUSPICIOUS"))
+
+        duration_sec = len(y) / float(SR)
+
+        if duration_sec <= 2.2:
+            # Asymmetric EMA risk persistence for live chunks (<= 2.2s)
+            if cal_prob >= prev_ema:
+                smoothed = round(0.70 * cal_prob + 0.30 * prev_ema, 4)
+            else:
+                smoothed = round(0.88 * prev_ema + 0.12 * cal_prob, 4)
+
+            if calib["tier"] == "HOLD":
+                sess_data["human_streak"] = 0
+                sess_data["ai_streak"] = sess_data.get("ai_streak", 0) + 1
+                if sess_data["ai_streak"] >= 2:
+                    sess_data["latched_hold"] = True
+                else:
+                    tier = "ALLOW"
+                    smoothed = min(smoothed, 0.24)
+            else:
+                sess_data["ai_streak"] = 0
+                sess_data["human_streak"] = sess_data.get("human_streak", 0) + 1
+                if sess_data["human_streak"] >= 2:
+                    sess_data["latched_hold"] = False
+
+            if sess_data.get("latched_hold", False):
+                tier = "HOLD"
+                smoothed = round(max(smoothed, 0.88), 4)
+            else:
+                if sess_data.get("ai_streak", 0) >= 2 or smoothed >= 0.65:
+                    tier = "HOLD"
+                else:
+                    tier = "ALLOW"
+
+            sess_data["ema"] = smoothed
+            SESSION_STATE["prev_risk"] = smoothed
+        else:
+            # Full file uploads (> 2.2s): single-shot evaluation, bypass debounce
+            tier = calib["tier"]
+            smoothed = cal_prob
+            sess_data["ema"] = smoothed
+            SESSION_STATE["prev_risk"] = smoothed
+        pol = policy_for("HIGH_RISK" if tier == "HOLD" else "SAFE")
+
+        # Fast chunk transcription with strict timeout
+        import io, soundfile as sf
+        wav_buf = io.BytesIO()
+        sf.write(wav_buf, y, SR, format="WAV", subtype="PCM_16")
+        transcript_text = transcribe_chunk_bytes(wav_buf.getvalue())
+
+        print(f"[LIVE SCORE] chunk -> cal={cal_prob:.4f} smoothed={smoothed:.4f} tier={tier} channel={calib['channel_quality']} transcript='{transcript_text}'", flush=True)
+
         return jsonify({
-            "prob": round(cal_prob, 4),
-            "score": round(cal_prob, 4),
-            "risk_score": round(cal_prob, 4),
-            "window_p": round(cal_prob, 4),
-            "call_p": round(cal_prob, 4),
-            "tier": cal_tier,
-            "calibrated_tier": cal_tier,
-            "action": cal_tier,
+            "prob": smoothed,
+            "score": smoothed,
+            "risk_score": smoothed,
+            "window_p": smoothed,
+            "call_p": smoothed,
+            "tier": tier,
+            "calibrated_tier": tier,
+            "action": tier,
+            "transcript": transcript_text,
             "voiced_seconds": r["voiced_seconds"],
             "n_windows": r["n_windows"],
             "ui": pol["ui"],
             "step_up": pol["step_up"],
-            "allow_sensitive": (cal_tier == "ALLOW"),
+            "allow_sensitive": (tier == "ALLOW"),
             "model": MODEL_NAME,
             "channel_quality": calib["channel_quality"],
             "uncertainty_note": calib["uncertainty_note"],

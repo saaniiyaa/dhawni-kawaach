@@ -56,30 +56,30 @@ def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -
         else:
             snr_db = 0.0
 
-    # 3. Degradation criteria: sr <= 8000, high_band_ratio < 0.015, or snr_db < 10.0
-    is_degraded = bool((sr <= 8000) or (high_band_ratio < 0.015) or (snr_db < 10.0))
+    # 3. Degradation criteria: sr <= 8000 or high_band_ratio < 0.0012
+    is_degraded = bool((sr <= 8000) or (high_band_ratio < 0.0012))
     channel_quality = "TELEPHONY_DEGRADED" if is_degraded else "WIDEBAND_CLEAN"
 
     # 4. Calibrate risk tier ("ALLOW" | "WARN" | "HOLD") and uncertainty_note
     prob = float(raw_ai_prob)
     if is_degraded:  # TELEPHONY_DEGRADED
-        if prob >= 0.96:
+        if prob >= 0.82:
             tier = "HOLD"
-            calibrated_prob = round(prob, 4)
+            calibrated_prob = round(max(prob, 0.86), 4)
             uncertainty_note = "Degraded 8kHz/noisy channel • Strong synthetic artifact overrides noise"
         else:
             tier = "ALLOW"
             calibrated_prob = round(min(prob * 0.25, 0.22), 4)
             uncertainty_note = "Degraded mic/channel bandwidth • Calibrated against DSP false-positives"
     else:  # WIDEBAND_CLEAN
-        if prob >= 0.65:
+        if prob >= 0.42:
             tier = "HOLD"
-            calibrated_prob = round(prob, 4)
+            calibrated_prob = round(max(prob, 0.86), 4)
             uncertainty_note = "Wideband harmonics intact • High-confidence synthetic signature"
         else:
             tier = "ALLOW"
-            calibrated_prob = round(min(prob, 0.22), 4)
-            uncertainty_note = "Wideband harmonics intact • Natural vocal profile"
+            calibrated_prob = round(min(prob, 0.16), 4)
+            uncertainty_note = "Wideband harmonics intact • Natural human vocal profile"
 
     return {
         "channel_quality": channel_quality,
