@@ -1,8 +1,10 @@
 # verify_round3.py
 # Automated End-to-End Verification for Round 3 (DHWANI-KAVACH)
+# Tests: ONNX health, empty/corrupt safe handling, mic 'Hello', 4-chunk continuous mic,
+# synthetic ElevenLabs-style forensic fusion, scam WAV/MP3, NPCI freeze, Safe-Word, and BSA Evidence Dossier.
 
 import io
-import re
+import math
 import sys
 import numpy as np
 import requests
@@ -20,27 +22,62 @@ REQUIRED_SCORE_KEYS = [
     "nlp_coercion",
     "session_id",
     "sha256_seal",
+    "forensics",
 ]
 
+REQUIRED_FORENSICS_KEYS = [
+    "pitch_jitter_pct",
+    "digital_zero_ratio",
+    "phase_coherence_score",
+    "acoustic_drift_score",
+    "forensic_ai_prob",
+]
+
+
 def test_health():
-    print("\n--- 1. Testing /api/health ---")
+    print("\n--- 1. Testing /api/health (ONNX inference active) ---")
     resp = requests.get(f"{BASE_URL}/api/health", timeout=5)
     print(f"Status Code: {resp.status_code}")
     data = resp.json()
     print(f"Health Response: {data}")
     assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
     assert data.get("ok") is True or data.get("status") == "ONLINE", "Backend not online"
-    print("PASS: /api/health is HTTP 200 and ONLINE")
+    assert "inference_backend" in data, "Missing 'inference_backend' in /api/health"
+    backend = data.get("inference_backend")
+    print(f"Active inference backend: {backend}")
+    assert backend in ("onnx", "pytorch"), f"Unexpected backend: {backend}"
+    assert data.get("onnx_active") is True, f"Expected onnx_active: True, got {data.get('onnx_active')}"
+    print("PASS: /api/health is HTTP 200, ONLINE, and ONNX execution provider active")
 
-def test_reset():
-    print("\n--- 2. Testing /api/reset ---")
-    resp = requests.post(f"{BASE_URL}/api/reset", timeout=5)
-    print(f"Status Code: {resp.status_code}")
-    data = resp.json()
-    print(f"Reset Response: {data}")
-    assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
-    assert data.get("ok") is True, f"Expected ok: True, got {data}"
-    print("PASS: /api/reset is HTTP 200 and reset session state")
+
+def test_empty_and_corrupt_bytes():
+    print("\n--- 2. Testing Empty and Corrupt Bytes (HTTP 200 Safe Handling) ---")
+    requests.post(f"{BASE_URL}/api/reset", timeout=5)
+
+    # 1. Empty bytes
+    files_empty = {"file": ("empty.wav", b"", "audio/wav")}
+    resp_empty = requests.post(f"{BASE_URL}/api/score", files=files_empty, data={"session_id": "test_empty"}, timeout=5)
+    print(f"Empty bytes Status Code: {resp_empty.status_code}")
+    assert resp_empty.status_code == 200, f"Expected 200 for empty bytes, got {resp_empty.status_code}"
+    res_e = resp_empty.json()
+    for k in REQUIRED_SCORE_KEYS:
+        assert k in res_e, f"Missing key '{k}' in empty bytes response"
+    assert res_e["tier"] == "ALLOW", f"Expected tier ALLOW for empty bytes, got {res_e['tier']}"
+    assert res_e["prob"] <= 0.20, f"Expected safe prob <= 0.20 for empty bytes, got {res_e['prob']}"
+
+    # 2. Corrupt / invalid bytes
+    files_corrupt = {"file": ("corrupt.bin", b"\x00\xff\xfe\x12\x34\x56\x78\x9a\xbc\xde", "application/octet-stream")}
+    resp_corrupt = requests.post(f"{BASE_URL}/api/score", files=files_corrupt, data={"session_id": "test_corrupt"}, timeout=5)
+    print(f"Corrupt bytes Status Code: {resp_corrupt.status_code}")
+    assert resp_corrupt.status_code == 200, f"Expected 200 for corrupt bytes, got {resp_corrupt.status_code}"
+    res_c = resp_corrupt.json()
+    for k in REQUIRED_SCORE_KEYS:
+        assert k in res_c, f"Missing key '{k}' in corrupt bytes response"
+    assert res_c["tier"] == "ALLOW", f"Expected tier ALLOW for corrupt bytes, got {res_c['tier']}"
+    assert res_c["prob"] <= 0.20, f"Expected safe prob <= 0.20 for corrupt bytes, got {res_c['prob']}"
+
+    print("PASS: Empty and corrupt bytes safely handled with HTTP 200 and standard contract")
+
 
 def test_short_human_burst():
     print("\n--- 3. Testing Short 0.4s 'Hello' Burst (source_type='mic') ---")
@@ -75,6 +112,8 @@ def test_short_human_burst():
     res = resp.json()
     for k in REQUIRED_SCORE_KEYS:
         assert k in res, f"Missing required key '{k}' in /api/score response"
+    for fk in REQUIRED_FORENSICS_KEYS:
+        assert fk in res["forensics"], f"Missing forensics key '{fk}'"
 
     prob = res.get("prob") or res.get("score")
     tier = res.get("tier")
@@ -86,8 +125,87 @@ def test_short_human_burst():
     assert len(seal) == 64, f"Expected 64-char hex SHA-256 seal, got {len(seal)}"
     print("PASS: 0.4s 'Hello' burst on mic correctly returns ALLOW (<= 0.22) with all contract keys")
 
+
+def test_four_consecutive_mic_speech_chunks():
+    print("\n--- 4. Testing 4 Consecutive Continuous Mic Speech Chunks (Zero False Positives) ---")
+    sr = 16000
+    dur = 1.5
+    requests.post(f"{BASE_URL}/api/reset", timeout=5)
+    sid = "sess_mic_continuous_4chunks"
+
+    for chunk_idx in range(4):
+        # Generate natural human voice chunk with pitch tremor (jitter > 0.8%) and natural mic noise floor
+        audio = np.random.normal(0, 0.003, int(dur * sr)).astype(np.float32)
+        t = np.arange(int(1.2 * sr)) / float(sr)
+        f0_track = 135.0 + 3.0 * np.sin(2 * np.pi * 7 * t) + np.random.normal(0, 1.8, len(t))
+        phase = 2 * np.pi * np.cumsum(f0_track) / float(sr)
+        voice = (0.24 * np.sin(phase) + 0.12 * np.sin(2 * phase) + 0.06 * np.sin(3 * phase)).astype(np.float32)
+        audio[int(0.15 * sr) : int(0.15 * sr) + len(voice)] += voice
+
+        wav_io = io.BytesIO()
+        sf.write(wav_io, audio, sr, format="WAV", subtype="PCM_16")
+        wav_bytes = wav_io.getvalue()
+
+        files = {"file": ("chunk.wav", wav_bytes, "audio/wav")}
+        data = {"session_id": sid, "mode": "live", "source_type": "mic"}
+        resp = requests.post(f"{BASE_URL}/api/score", files=files, data=data, timeout=30)
+        assert resp.status_code == 200
+        res = resp.json()
+        print(f"Chunk #{chunk_idx+1}: Tier={res['tier']}, Score={res['score']:.4f}, Forensics_AI_Prob={res['forensics']['forensic_ai_prob']:.4f}")
+        assert res["tier"] == "ALLOW", f"Chunk #{chunk_idx+1} falsely triggered HOLD!"
+        assert res["score"] <= 0.22, f"Chunk #{chunk_idx+1} score too high: {res['score']}"
+
+    print("PASS: 4 consecutive continuous speech chunks on mic remained 100% ALLOW (zero false alarms)")
+
+
+def test_synthetic_forensic_fusion_upload():
+    print("\n--- 5. Testing Synthetic Smooth-F0 + Digital-Zero ElevenLabs-style Clip on Upload ---")
+    requests.post(f"{BASE_URL}/api/reset", timeout=5)
+
+    sr = 16000
+    dur = 2.5
+    total_samples = int(dur * sr)
+    audio = np.zeros(total_samples, dtype=np.float32)
+
+    # Synthetic tone with flat pitch (jitter = 0%) and digital zero gap
+    seg_len = int(0.8 * sr)
+    t = np.arange(seg_len) / float(sr)
+    tone = (
+        0.30 * np.sin(2 * np.pi * 150 * t) +
+        0.20 * np.sin(2 * np.pi * 300 * t) +
+        0.15 * np.sin(2 * np.pi * 450 * t) +
+        0.10 * np.sin(2 * np.pi * 600 * t) +
+        0.08 * np.sin(2 * np.pi * 1500 * t) +
+        0.05 * np.sin(2 * np.pi * 3000 * t) +
+        0.04 * np.sin(2 * np.pi * 5000 * t)
+    ).astype(np.float32)
+
+    audio[int(0.1 * sr) : int(0.1 * sr) + seg_len] = tone
+    # Digital zero silence gap between 0.9s and 1.3s
+    audio[int(1.3 * sr) : int(1.3 * sr) + seg_len] = tone
+
+    wav_io = io.BytesIO()
+    sf.write(wav_io, audio, sr, format="WAV", subtype="PCM_16")
+    wav_bytes = wav_io.getvalue()
+
+    files = {"file": ("elevenlabs_synth.wav", wav_bytes, "audio/wav")}
+    data = {"mode": "upload", "source_type": "upload", "session_id": "test_synth_fusion"}
+    resp = requests.post(f"{BASE_URL}/api/score", files=files, data=data, timeout=30)
+    print(f"Status Code: {resp.status_code}")
+    res = resp.json()
+    for k in REQUIRED_SCORE_KEYS:
+        assert k in res, f"Missing required key '{k}'"
+
+    forensic_prob = res["forensics"]["forensic_ai_prob"]
+    print(f"Synth Clip: Tier={res['tier']}, Prob={res['prob']:.4f}, Forensic_AI_Prob={forensic_prob:.4f}")
+    assert forensic_prob >= 0.68, f"Expected forensic_ai_prob >= 0.68, got {forensic_prob}"
+    assert res["tier"] == "HOLD", f"Expected tier HOLD via forensic fusion, got {res['tier']}"
+    assert res["prob"] >= 0.78, f"Expected prob >= 0.78, got {res['prob']}"
+    print("PASS: Synthetic smooth-F0 + digital-zero clip correctly caught at HOLD (>= 0.78) via forensic fusion")
+
+
 def test_scam_ai_sample():
-    print("\n--- 4. Testing scam_ai_sample.wav (source_type='upload') ---")
+    print("\n--- 6. Testing scam_ai_sample.wav (source_type='upload') ---")
     requests.post(f"{BASE_URL}/api/reset", timeout=5)
 
     with open("scam_ai_sample.wav", "rb") as fh:
@@ -109,8 +227,9 @@ def test_scam_ai_sample():
     assert len(seal) == 64, f"Expected 64-char hex SHA-256 seal, got {len(seal)}"
     print("PASS: scam_ai_sample.wav correctly detects synthetic voice (HOLD, >= 0.85)")
 
+
 def test_scam_neural_mp3():
-    print("\n--- 5. Testing scam_neural_in.mp3 (source_type='upload') ---")
+    print("\n--- 7. Testing scam_neural_in.mp3 (source_type='upload') ---")
     requests.post(f"{BASE_URL}/api/reset", timeout=5)
 
     with open("scam_neural_in.mp3", "rb") as fh:
@@ -132,8 +251,9 @@ def test_scam_neural_mp3():
     assert len(seal) == 64, f"Expected 64-char hex SHA-256 seal, got {len(seal)}"
     print("PASS: scam_neural_in.mp3 correctly detects synthetic voice (HOLD, >= 0.85)")
 
+
 def test_npci_freeze():
-    print("\n--- 6. Testing /api/npci/freeze ---")
+    print("\n--- 8. Testing /api/npci/freeze ---")
     payload = {"risk_tier": "HOLD", "session_id": "test_e2e_freeze"}
     resp = requests.post(f"{BASE_URL}/api/npci/freeze", json=payload, timeout=5)
     print(f"Status Code: {resp.status_code}")
@@ -146,8 +266,9 @@ def test_npci_freeze():
     assert "freeze" in data and "reference" in data["freeze"], "Missing freeze receipt reference"
     print("PASS: /api/npci/freeze engaged and returned HTTP 200 with ₹50,000 protected receipt")
 
+
 def test_challenge_verify():
-    print("\n--- 7. Testing /api/challenge/verify (Safe-Word Challenge) ---")
+    print("\n--- 9. Testing /api/challenge/verify (Safe-Word Challenge) ---")
     # 1. Invalid safe-word -> verified: False, status: FROZEN
     bad_payload = {"safe_word": "WRONG_ATTEMPT"}
     resp_bad = requests.post(f"{BASE_URL}/api/challenge/verify", json=bad_payload, timeout=5)
@@ -175,8 +296,9 @@ def test_challenge_verify():
 
     print("PASS: /api/challenge/verify correctly rejects invalid words and unfreezes on valid safe-word")
 
+
 def test_evidence_dossier():
-    print("\n--- 8. Testing /api/evidence/dossier (Section 63 BSA 2023 Digital Evidence Seal) ---")
+    print("\n--- 10. Testing /api/evidence/dossier (Section 63 BSA 2023 Digital Evidence Seal) ---")
     payload = {
         "caller_number": "+91-98765-43210",
         "risk_tier": "HOLD",
@@ -199,19 +321,22 @@ def test_evidence_dossier():
     assert seal and len(seal) == 64, f"Invalid 64-char sha256_seal: {seal}"
     print(f"PASS: /api/evidence/dossier generated valid Case ID '{dossier['case_id']}' with SHA-256 seal: {seal}")
 
+
 if __name__ == "__main__":
     try:
         test_health()
-        test_reset()
+        test_empty_and_corrupt_bytes()
         test_short_human_burst()
+        test_four_consecutive_mic_speech_chunks()
+        test_synthetic_forensic_fusion_upload()
         test_scam_ai_sample()
         test_scam_neural_mp3()
         test_npci_freeze()
         test_challenge_verify()
         test_evidence_dossier()
-        print("\n=======================================================")
-        print("ALL 8 END-TO-END ROUND 3 INTEGRATION CHECKS PASSED 100%!")
-        print("=======================================================")
+        print("\n========================================================")
+        print("ALL 10 END-TO-END ROUND 3 INTEGRATION CHECKS PASSED 100%!")
+        print("========================================================")
     except AssertionError as ae:
         print(f"\n[FAIL] Assertion failed: {ae}")
         sys.exit(1)

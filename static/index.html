@@ -2558,7 +2558,7 @@
           var y = i * binHeight;
 
           var r = 0, g = 0, bVal = 0;
-          if (emergencyActive && currentDashboardState === "CRITICAL_THREAT") {
+          if (emergencyActive && (window._lastBackendTier === "HOLD" || (typeof liveScriptRisk !== "undefined" && liveScriptRisk >= 70))) {
             r = Math.floor(255 * Math.min(1, energy * 1.35));
             g = Math.floor(45 * energy);
             bVal = Math.floor(65 * energy);
@@ -3756,7 +3756,7 @@
               if (setLast[wordsNew[j]]) common++;
             }
             var overlapRatio = common / Math.min(wordsLast.length, wordsNew.length);
-            if (overlapRatio >= 0.60) {
+            if (overlapRatio >= 0.55) {
               if (wordsNew.length >= wordsLast.length) {
                 liveTranscriptHistory[liveTranscriptHistory.length - 1] = streamEntry;
               }
@@ -3982,7 +3982,7 @@
           vocalProsodyText = "SYNTHETIC AI VOICE CLONE DETECTED";
         } else if (liveVoiceRisk >= 70) {
           threatBannerTitleText = "🚨 SYNTHETIC AI VOICE CLONE DETECTED";
-          threatBannerDetailText = "Neural vocoder spectral plateau & near-zero micro-jitter detected (Script: Benign / Non-Coercive).";
+          threatBannerDetailText = "High-confidence synthetic vocoder signature detected by CNN v2 & acoustic physics forensics (Script: Benign / Non-Coercive).";
           vocalProsodyText = "SYNTHETIC AI VOICE CLONE DETECTED";
         } else if (currentDetectedThreatCategory) {
           threatBannerTitleText = currentDetectedThreatCategory.alertTitle;
