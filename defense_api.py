@@ -7,7 +7,7 @@ import hashlib
 import json
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 
 bp = Blueprint("defense_api", __name__)
 
@@ -29,11 +29,13 @@ def _sha256(obj):
 @bp.route("/api/evidence/dossier", methods=["POST"])
 def evidence_dossier():
     p = request.get_json(silent=True) or {}
+    model_meta = dict(MODEL_META)
+    model_meta["model"] = current_app.config.get("MODEL_VERSION") or "cnn_v2"
     case = {
         "case_id": "DK-" + format(int(time.time() * 1000), "X"),
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S+05:30"),
         "law": "Section 63, Bharatiya Sakshya Adhiniyam 2023 (in force 01-Jul-2024); lineage: IT Act s.65B",
-        "model": MODEL_META,
+        "model": model_meta,
         "caller_number": str(p.get("caller_number", "unknown"))[:24],
         "risk_tier": str(p.get("risk_tier", "UNKNOWN")).upper()[:12],
         "radar_score": p.get("radar_score"),

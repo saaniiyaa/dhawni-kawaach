@@ -7,6 +7,8 @@ os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 import json
 import tempfile
+import time
+import uuid
 
 try:
     from flask import Flask, request, jsonify, send_file
@@ -21,7 +23,6 @@ from ml.audio.io import load, SR, fix_length, energy_vad
 from ml.features.dsp import logmel
 from ml.models.cnn import MelCNN
 from ml.engine.temporal import TemporalEngine, EngineConfig, policy_for
-from ml.engine.scam_radar import scan
 from ml.engine import voiceprint_falak
 from ml.augment.codecs import FFMPEG, run_quiet
 
@@ -89,6 +90,9 @@ OFFICIAL_NUMBERS = {
 }
 
 app = Flask(__name__, static_folder="static")
+app.config["MODEL_VERSION"] = (
+    "cnn_v1" if MODEL_NAME and "v1" in MODEL_NAME.lower() else "cnn_v2"
+)
 # --- Defense API (SIH26104 screening) - try/except = server never breaks ---
 try:
     from defense_api import bp as _defense_bp
@@ -273,6 +277,68 @@ def api_score():
         })
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+@app.route("/api/demo_audio/<name>", methods=["GET"])
+def api_demo_audio(name):
+    allowed = {
+        "real": "results/demo/demo_real_studio.wav",
+        "fake": "results/demo/demo_fake_studio.wav",
+        "my_voice": "data/my_voice.wav",
+    }
+    target = allowed.get(name.lower())
+    if target and os.path.exists(target):
+        return send_file(target, mimetype="audio/wav")
+    return jsonify({"error": "demo file not found"}), 404
+
+
+@app.route("/api/radar", methods=["POST"])
+def api_radar():
+    data = request.get_json(silent=True) or {}
+    text = data.get("text", "")
+    try:
+        from ml.engine.scam_radar import scan as radar_scan
+    except ImportError as import_error:
+        return jsonify({"error": "scam radar unavailable: " + str(import_error)}), 503
+    return jsonify(radar_scan(text))
+
+
+@app.route("/api/action/oob", methods=["POST"])
+def api_oob():
+    data = request.get_json(silent=True) or {}
+    target_number = data.get("number", "+91-98765-XXXXX")
+    return jsonify({
+        "status": "INITIATED",
+        "action": "OUT_OF_BAND_CALLBACK",
+        "target": target_number,
+        "auth_pin": "582914",
+        "expires_in_sec": 60,
+        "timestamp": time.strftime("%H:%M:%S"),
+    })
+
+
+@app.route("/api/action/report", methods=["POST"])
+def api_report():
+    data = request.get_json(silent=True) or {}
+    incident_id = f"I4C-DK-{uuid.uuid4().hex[:8].upper()}"
+    return jsonify({
+        "status": "DISPATCHED",
+        "incident_id": incident_id,
+        "recipient": "1930 Cyber Fraud / I4C National Helpline",
+        "severity": data.get("tier", "HIGH_RISK"),
+        "telemetry_attached": True,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
+
+
+@app.route("/api/health", methods=["GET", "POST"])
+def api_health():
+    return jsonify({
+        "status": "ONLINE",
+        "app": "DHWANI-KAVACH",
+        "model": MODEL_NAME,
+        "timestamp": time.time(),
+    })
 
 
 if __name__ == "__main__":
