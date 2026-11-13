@@ -344,27 +344,94 @@ def api_score():
             raw_ai_prob = r["window_p"]
 
         calib = evaluate_channel_and_calibrate(y, SR, raw_ai_prob)
-        print(f"[LIVE SCORE] chunk -> prob={calib['calibrated_prob']:.4f} tier={r['tier']} (calib={calib['tier']}) channel={calib['channel_quality']} note={calib['uncertainty_note']}", flush=True)
-        pol = policy_for(r["tier"])
+        cal_prob = calib["calibrated_prob"]
+        cal_tier = calib["tier"]
+        SESSION_STATE["prev_risk"] = cal_prob
+        print(f"[LIVE SCORE] chunk -> prob={cal_prob:.4f} tier={cal_tier} channel={calib['channel_quality']} note={calib['uncertainty_note']}", flush=True)
+        pol = policy_for("SAFE" if cal_tier == "ALLOW" else ("HIGH_RISK" if cal_tier == "HOLD" else "SUSPICIOUS"))
         return jsonify({
-            "window_p": round(r["window_p"], 4),
-            "call_p": round(r["call_p"], 4),
-            "tier": r["tier"],
+            "prob": round(cal_prob, 4),
+            "score": round(cal_prob, 4),
+            "risk_score": round(cal_prob, 4),
+            "window_p": round(cal_prob, 4),
+            "call_p": round(cal_prob, 4),
+            "tier": cal_tier,
+            "calibrated_tier": cal_tier,
+            "action": cal_tier,
             "voiced_seconds": r["voiced_seconds"],
             "n_windows": r["n_windows"],
-            "action": pol["action"],
             "ui": pol["ui"],
             "step_up": pol["step_up"],
-            "allow_sensitive": pol["allow_sensitive_action"],
+            "allow_sensitive": (cal_tier == "ALLOW"),
             "model": MODEL_NAME,
             "channel_quality": calib["channel_quality"],
             "uncertainty_note": calib["uncertainty_note"],
             "channel_metrics": calib["channel_metrics"],
-            "calibrated_prob": calib["calibrated_prob"],
-            "calibrated_tier": calib["tier"],
+            "calibrated_prob": cal_prob,
         })
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+@app.route("/api/tts", methods=["GET", "POST"])
+@app.route("/api/synthesize", methods=["GET", "POST"])
+def api_tts():
+    """Synthesize voice using edge-tts with offline pyttsx3 and bundled demo fallbacks."""
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        text = data.get("text") or request.form.get("text") or ""
+        voice = data.get("voice") or request.form.get("voice") or "en-IN-PrabhatNeural"
+    else:
+        text = request.args.get("text", "")
+        voice = request.args.get("voice", "en-IN-PrabhatNeural")
+
+    if not text:
+        text = ("Hello Papa, wait a second... can you hear me? "
+                "My phone is dying, please send twenty-five thousand rupees on UPI right now.")
+
+    tmp_dir = tempfile.mkdtemp(prefix="dk_tts_")
+    out_mp3 = os.path.join(tmp_dir, "tts_out.mp3")
+    out_wav = os.path.join(tmp_dir, "tts_out.wav")
+
+    # 1. Primary: edge-tts
+    try:
+        cmd = [
+            sys.executable, "-m", "edge_tts",
+            "--voice", voice,
+            "--rate=+6%",
+            "--pitch=+3Hz",
+            "--text", text,
+            "--write-media", out_mp3,
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=12)
+        if res.returncode == 0 and os.path.exists(out_mp3) and os.path.getsize(out_mp3) > 100:
+            return send_file(out_mp3, mimetype="audio/mpeg")
+    except Exception as e_edge:
+        print(f"[TTS] edge-tts error: {e_edge}, trying offline fallback...", flush=True)
+
+    # 2. Secondary: pyttsx3 offline Windows SAPI
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        engine.setProperty("rate", 150)
+        engine.save_to_file(text, out_wav)
+        engine.runAndWait()
+        if os.path.exists(out_wav) and os.path.getsize(out_wav) > 100:
+            return send_file(out_wav, mimetype="audio/wav")
+    except Exception as e_py:
+        print(f"[TTS] pyttsx3 error: {e_py}, serving bundled demo...", flush=True)
+
+    # 3. Tertiary fallback: bundled synthetic demo clip
+    for fallback_path in [
+        "results/demo/demo_fake_studio.wav",
+        "bench_1_ai_turn_taking_wideband.wav",
+        "raw_ai_conv.mp3",
+    ]:
+        if os.path.exists(fallback_path):
+            mtype = "audio/mpeg" if fallback_path.endswith(".mp3") else "audio/wav"
+            return send_file(fallback_path, mimetype=mtype)
+
+    return jsonify({"error": "No TTS audio available"}), 500
 
 
 @app.route("/api/demo_audio/<name>", methods=["GET"])
@@ -377,6 +444,8 @@ def api_demo_audio(name):
     target = allowed.get(name.lower())
     if target and os.path.exists(target):
         return send_file(target, mimetype="audio/wav")
+    if name.lower() in ("tts", "synthetic", "ai"):
+        return api_tts()
     return jsonify({"error": "demo file not found"}), 404
 
 

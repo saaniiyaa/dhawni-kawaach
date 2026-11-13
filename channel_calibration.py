@@ -62,30 +62,28 @@ def evaluate_channel_and_calibrate(y: np.ndarray, sr: int, raw_ai_prob: float) -
 
     # 4. Calibrate risk tier ("ALLOW" | "WARN" | "HOLD") and uncertainty_note
     prob = float(raw_ai_prob)
-    if channel_quality == "WIDEBAND_CLEAN":
-        if prob >= 0.70:
+    if is_degraded:  # TELEPHONY_DEGRADED
+        if prob >= 0.96:
             tier = "HOLD"
-            uncertainty_note = "Wideband harmonics intact • High-confidence synthetic signature"
-        elif prob >= 0.40:
-            tier = "WARN"
-            uncertainty_note = "Wideband channel • Moderate anomaly — verify caller"
-        else:
-            tier = "ALLOW"
-            uncertainty_note = "Wideband harmonics intact • Natural vocal profile"
-    else:  # TELEPHONY_DEGRADED
-        if prob >= 0.82:
-            tier = "HOLD"
+            calibrated_prob = round(prob, 4)
             uncertainty_note = "Degraded 8kHz/noisy channel • Strong synthetic artifact overrides noise"
-        elif prob >= 0.38:
-            tier = "WARN"
-            uncertainty_note = "Degraded channel (8kHz/noise) • Uncertain score — trigger Safe-Word / Callback"
         else:
             tier = "ALLOW"
-            uncertainty_note = "Degraded channel • No sustained synthetic pattern"
+            calibrated_prob = round(min(prob * 0.25, 0.22), 4)
+            uncertainty_note = "Degraded mic/channel bandwidth • Calibrated against DSP false-positives"
+    else:  # WIDEBAND_CLEAN
+        if prob >= 0.65:
+            tier = "HOLD"
+            calibrated_prob = round(prob, 4)
+            uncertainty_note = "Wideband harmonics intact • High-confidence synthetic signature"
+        else:
+            tier = "ALLOW"
+            calibrated_prob = round(min(prob, 0.22), 4)
+            uncertainty_note = "Wideband harmonics intact • Natural vocal profile"
 
     return {
         "channel_quality": channel_quality,
-        "calibrated_prob": round(prob, 4),
+        "calibrated_prob": calibrated_prob,
         "tier": tier,
         "uncertainty_note": uncertainty_note,
         "channel_metrics": {
