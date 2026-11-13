@@ -55,6 +55,17 @@ engine = TemporalEngine(EngineConfig(
 SESSION_STATE = {
     "prev_risk": 0.0,
 }
+SESSIONS = {}
+
+def get_session_engine(session_id=None):
+    if not session_id:
+        return engine
+    if session_id not in SESSIONS:
+        SESSIONS[session_id] = TemporalEngine(EngineConfig(
+            theta_lo=float(CAL.get("theta_lo", 0.62)),
+            theta_hi=float(CAL.get("theta_hi", 0.90)),
+        ))
+    return SESSIONS[session_id]
 if CAL:
     print(f"calibration: loaded {_CAL_PATH} "
           f"(vad_min={CAL.get('vad_min')}, bias={CAL.get('logit_bias')}, "
@@ -115,14 +126,6 @@ except ImportError:
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    return response
-
-
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
     return response
@@ -138,6 +141,19 @@ def score_audio(y):
 
 
 def decode_to_wav(raw_bytes, suffix):
+    if suffix == ".wav" or (len(raw_bytes) >= 12 and raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WAVE"):
+        try:
+            import io, soundfile as sf
+            data, in_sr = sf.read(io.BytesIO(raw_bytes))
+            data = np.asarray(data, dtype=np.float32)
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            if in_sr != SR:
+                import librosa
+                data = librosa.resample(data, orig_sr=in_sr, target_sr=SR)
+            return data.astype(np.float32)
+        except Exception:
+            pass
     tmp = tempfile.mkdtemp(prefix="dk_demo_")
     try:
         inp = os.path.join(tmp, "in" + suffix)
@@ -161,6 +177,7 @@ def index():
 def reset():
     engine.reset()
     SESSION_STATE["prev_risk"] = 0.0
+    SESSIONS.clear()
     return jsonify({"ok": True})
 
 @app.route("/api/ping", methods=["GET", "POST", "OPTIONS"])
@@ -266,9 +283,12 @@ def api_score():
             suffix = ".m4a"
         else:
             suffix = ".bin"
+        session_id = request.args.get("session_id") or request.form.get("session_id")
         if request.files or "multipart/form-data" in ctype:
             f = request.files.get("file") or request.files.get("audio") or next(iter(request.files.values()), None)
             raw_bytes = f.read() if f is not None else b""
+            if not session_id and request.form.get("session_id"):
+                session_id = request.form.get("session_id")
             if f is not None and f.filename and "." in f.filename:
                 suffix = "." + f.filename.rsplit(".", 1)[-1].lower()
             elif f is not None and getattr(f, "content_type", ""):
@@ -283,6 +303,8 @@ def api_score():
             raw_bytes = b""
             try:
                 d = request.get_json(force=True, silent=True) or {}
+                if not session_id and d.get("session_id"):
+                    session_id = d.get("session_id")
                 s = d.get("audio") or d.get("data") or d.get("blob") or d.get("file") or ""
                 if isinstance(s, str) and s:
                     raw_bytes = _b64.b64decode(s.split(",")[-1])
@@ -292,15 +314,16 @@ def api_score():
                 raw_bytes = request.get_data()
         else:
             raw_bytes = request.get_data()
-        print(f"[score] in: ctype={ctype}, bytes={len(raw_bytes)}, suffix={suffix}")
+        print(f"[score] in: ctype={ctype}, bytes={len(raw_bytes)}, suffix={suffix}, session={session_id}", flush=True)
         if not raw_bytes:
             return jsonify({"error": "no audio received"})
         y = decode_to_wav(raw_bytes, suffix)       
-        if len(y) < int(0.75 * SR):
+        if len(y) < int(0.25 * SR):
             return jsonify({"error": "too short"})
         if len(y) < SR:
             y = np.pad(y, (0, SR - len(y)))
 
+        sess_engine = get_session_engine(session_id)
         chunk_dur = len(y) / SR
         vfrac = float(energy_vad(y[-int(SECONDS * SR):]).mean()) if len(y) >= int(SECONDS * SR) else float(energy_vad(y).mean())
         vad_min = float(CAL.get("vad_min", 0.25))
@@ -308,7 +331,7 @@ def api_score():
         # Turn-taking pause chunk: decay accumulated session risk gradually (prev_risk * 0.90)
         # instead of resetting the session risk score to zero
         if (1.0 <= chunk_dur <= 2.0 and vfrac < vad_min) or vfrac < vad_min:
-            r = engine.update_pause(decay_factor=0.90)
+            r = sess_engine.update_pause(decay_factor=0.90)
             SESSION_STATE["prev_risk"] = r["call_p"]
             raw_ai_prob = r["window_p"]
         else:
@@ -316,11 +339,12 @@ def api_score():
             bias = float(CAL.get("logit_bias", 0.0))
             q = min(max(raw, 1e-4), 1 - 1e-4)
             p = 1.0 / (1.0 + math.exp(-(math.log(q / (1.0 - q)) + bias)))
-            r = engine.update(p, vfrac * SECONDS)
+            r = sess_engine.update(p, vfrac * SECONDS)
             SESSION_STATE["prev_risk"] = r["call_p"]
             raw_ai_prob = r["window_p"]
 
         calib = evaluate_channel_and_calibrate(y, SR, raw_ai_prob)
+        print(f"[LIVE SCORE] chunk -> prob={calib['calibrated_prob']:.4f} tier={r['tier']} (calib={calib['tier']}) channel={calib['channel_quality']} note={calib['uncertainty_note']}", flush=True)
         pol = policy_for(r["tier"])
         return jsonify({
             "window_p": round(r["window_p"], 4),

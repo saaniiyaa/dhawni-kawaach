@@ -975,6 +975,16 @@ button:active:not(:disabled),
                 <span>🖥️ Capture AI Call Tab (Live AI Test)</span>
               </button>
             </div>
+            <!-- Live Input-Level Meter (RMS dB) -->
+            <div id="liveLevelMeterContainer" class="flex items-center gap-2 px-1 pt-1">
+              <span class="text-[10px] font-mono text-[var(--text-muted)] font-extrabold uppercase tracking-wider flex items-center gap-1">
+                <span class="material-symbols-outlined text-[13px] text-[var(--accent-cyan)]">graphic_eq</span> LEVEL:
+              </span>
+              <div class="flex-1 h-2 bg-[var(--bg-card-sub)] border border-[var(--border-card)] rounded-full overflow-hidden p-[1px] relative">
+                <div id="liveLevelBar" class="h-full bg-[var(--text-muted)] rounded-full transition-all duration-75" style="width: 0%;"></div>
+              </div>
+              <span id="liveLevelText" class="text-[10px] font-mono font-extrabold text-[var(--text-muted)] min-w-[52px] text-right">-90 dB</span>
+            </div>
           </div>
 
           <!-- Incoming Action Buttons -->
@@ -2585,6 +2595,10 @@ function setupWebAudioAnalyser(stream) {
 
 function teardownWebAudio() {
     stopFallbackWaveform();
+    if (typeof wavCaptureInstance !== 'undefined' && wavCaptureInstance) {
+        try { wavCaptureInstance.stop(); } catch (e) {}
+        wavCaptureInstance = null;
+    }
     if (analyserFrameId) {
         cancelAnimationFrame(analyserFrameId);
         analyserFrameId = null;
@@ -2600,6 +2614,9 @@ function teardownWebAudio() {
     if (audioContext) {
         try { audioContext.close(); } catch (e) {}
         audioContext = null;
+    }
+    if (typeof updateLiveLevelMeter === 'function') {
+        updateLiveLevelMeter(-90);
     }
 }
 
@@ -2869,7 +2886,45 @@ function updateScriptNlpUI(riskPercent, topThreat, intentLevel) {
 // ============================================================================
 // 11. AGGREGATE RISK COMPUTATION & MULTI-FRAUD DEFENSE ENFORCEMENT
 // ============================================================================
-function updateCombinedRiskUI() {
+function updateCombinedRiskUI(data) {
+    if (data && typeof data === 'object') {
+        if (data.channel_quality || data.uncertainty_note) {
+            updateChannelCalibrationUI(data.channel_quality, data.uncertainty_note);
+        }
+        var rawScore = data.calibrated_prob !== undefined ? data.calibrated_prob : (data.call_p !== undefined ? data.call_p : data.window_p);
+        var tier = (data.calibrated_tier || data.tier || '').toUpperCase();
+        var isAiThreat = tier === 'HOLD' || tier === 'HIGH_RISK' || rawScore >= 0.70;
+        var isWarn = tier === 'WARN' || tier === 'SUSPICIOUS' || (rawScore >= 0.38 && rawScore < 0.70);
+
+        if (isAiThreat) {
+            syntheticVoiceHangover = Date.now() + 5000;
+            dkBeep();
+            latchedSpeakerIdentity = 'ai';
+            liveVoiceRisk = Math.min(96, Math.max(85, Math.round((rawScore || 0.88) * 100)));
+            smoothedVoiceRisk = liveVoiceRisk;
+            dynamicLlr = data.llr !== undefined ? data.llr : 3.85;
+            updateSpeakerIdentityUI('ai');
+            updateVoiceAuthUI(liveVoiceRisk, 100 - liveVoiceRisk, data.uncertainty_note || "SYNTHETIC AI VOICE CLONE DETECTED");
+            updateXaiMetrics(0.24, 14.8, dynamicLlr, "UNNATURAL VOCAL SPECTRUM");
+        } else if (isWarn) {
+            liveVoiceRisk = Math.max(45, Math.min(68, Math.round((rawScore || 0.50) * 100)));
+            smoothedVoiceRisk = liveVoiceRisk;
+            dynamicLlr = data.llr !== undefined ? data.llr : 0.8;
+            updateSpeakerIdentityUI('warning');
+            updateVoiceAuthUI(liveVoiceRisk, 100 - liveVoiceRisk, data.uncertainty_note || "UNCERTAIN / VERIFY CALLER");
+            updateXaiMetrics(1.8, 5.0, dynamicLlr, "MODERATE ANOMALY");
+        } else {
+            syntheticVoiceHangover = 0;
+            latchedSpeakerIdentity = 'human';
+            liveVoiceRisk = Math.max(8, Math.min(15, Math.round((rawScore || 0.10) * 100)));
+            smoothedVoiceRisk = liveVoiceRisk;
+            dynamicLlr = -2.45;
+            updateSpeakerIdentityUI('human');
+            updateVoiceAuthUI(liveVoiceRisk, 100 - liveVoiceRisk, data.uncertainty_note || "AUTHENTIC HUMAN SPEECH");
+            updateXaiMetrics(4.85, 0.08, dynamicLlr, "CLEAN / BIOLOGICAL");
+        }
+    }
+
     // SCRIPT/INTENT INDEPENDENCE:
     // Case 1: If speech is confirmed synthetic AI, risk automatically escalates to 85%+ (Critical)
     // even with generic speech, because voice impersonation is inherently malicious in this threat model.
@@ -3448,48 +3503,20 @@ async function sendAudioChunkToBackend(blob) {
     if (!isBackendOnline || isScoringPending) return;
     isScoringPending = true;
     try {
+        var fd = new FormData();
+        fd.append('file', blob, blob.name || 'live_chunk.wav');
+        if (typeof liveSessionId !== 'undefined' && liveSessionId) {
+            fd.append('session_id', liveSessionId);
+            fd.append('mode', 'live');
+        }
         var resp = await fetch(API_BASE + '/api/score', {
             method: 'POST',
-            headers: { 'Content-Type': blob.type || 'audio/webm' },
-            body: blob
+            body: fd
         });
         if (resp.ok) {
             var data = await resp.json();
             if (!data.error && callActive && !isManualSimulation) {
-                if (data.channel_quality || data.uncertainty_note) {
-                    updateChannelCalibrationUI(data.channel_quality, data.uncertainty_note);
-                }
-                var cnnProb = data.call_p !== undefined ? data.call_p : data.window_p;
-                var cnnRisk = Math.round(cnnProb * 100);
-
-                if (data.tier === 'HIGH_RISK') {
-                    syntheticVoiceHangover = Date.now() + 5000;
-                    dkBeep();
-                    latchedSpeakerIdentity = 'ai';
-                    liveVoiceRisk = Math.min(92, Math.max(88, cnnRisk));
-                    smoothedVoiceRisk = liveVoiceRisk;
-                    dynamicLlr = data.llr !== undefined ? Math.max(3.2, data.llr) : 3.85;
-                    updateSpeakerIdentityUI('ai');
-                    updateVoiceAuthUI(liveVoiceRisk, 8, "SYNTHETIC AI VOICE CLONE DETECTED");
-                    updateXaiMetrics(0.24, 14.8, dynamicLlr, "UNNATURAL VOCAL SPECTRUM");
-                } else if (data.tier === 'SUSPICIOUS') {
-                    liveVoiceRisk = Math.max(50, cnnRisk);
-                    smoothedVoiceRisk = liveVoiceRisk;
-                    updateVoiceAuthUI(liveVoiceRisk, 50, "SUSPICIOUS PROSODY");
-                    updateXaiMetrics(1.8, 4.5, data.llr !== undefined ? data.llr : 0.8, "MODERATE");
-                } else {
-                    // SAFE biological human speech
-                    syntheticVoiceHangover = 0;
-                    latchedSpeakerIdentity = 'human';
-                    liveVoiceRisk = 10;
-                    smoothedVoiceRisk = 10;
-                    dynamicLlr = -2.45;
-                    updateSpeakerIdentityUI('human');
-                    updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-                    updateXaiMetrics(4.85, 0.08, -2.45, "CLEAN / BIOLOGICAL");
-                }
-
-                updateCombinedRiskUI();
+                updateCombinedRiskUI(data);
             }
         }
     } catch (err) {
@@ -3652,9 +3679,258 @@ function scanManualScript() {
 }
 
 // ============================================================================
-// 14. AUDIO SOURCE SWITCHER & REAL-TIME 1-SECOND CHUNK ENGINE
+// 14. AUDIO SOURCE SWITCHER & REAL-TIME 1.5-SECOND 16kHz WAV CHUNK ENGINE
 // ============================================================================
 var selectedAudioSource = 'mic'; // 'mic' | 'tab'
+var wavCaptureInstance = null;
+var liveSessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+var liveChunkCounter = 0;
+
+function updateLiveLevelMeter(rmsDb) {
+    var bar = document.getElementById('liveLevelBar');
+    var txt = document.getElementById('liveLevelText');
+    if (!bar || !txt) return;
+    if (rmsDb === null || rmsDb === undefined || isNaN(rmsDb) || rmsDb <= -89.5) {
+        bar.style.width = '0%';
+        bar.style.backgroundColor = 'var(--text-muted)';
+        txt.textContent = '-90 dB';
+        txt.className = 'text-[10px] font-mono font-extrabold text-[var(--text-muted)] min-w-[52px] text-right';
+        return;
+    }
+    var pct = Math.min(100, Math.max(0, ((rmsDb + 90) / 90) * 100));
+    bar.style.width = pct + '%';
+    txt.textContent = (rmsDb > -0.5 ? '0.0' : rmsDb.toFixed(1)) + ' dB';
+    if (rmsDb > -25) {
+        bar.style.backgroundColor = 'var(--accent-crimson)';
+        txt.className = 'text-[10px] font-mono font-extrabold text-[var(--accent-crimson)] min-w-[52px] text-right';
+    } else if (rmsDb > -50) {
+        bar.style.backgroundColor = 'var(--accent-emerald)';
+        txt.className = 'text-[10px] font-mono font-extrabold text-[var(--accent-emerald)] min-w-[52px] text-right';
+    } else if (rmsDb > -70) {
+        bar.style.backgroundColor = 'var(--accent-cyan)';
+        txt.className = 'text-[10px] font-mono font-extrabold text-[var(--accent-cyan)] min-w-[52px] text-right';
+    } else {
+        bar.style.backgroundColor = 'var(--text-muted)';
+        txt.className = 'text-[10px] font-mono font-extrabold text-[var(--text-muted)] min-w-[52px] text-right';
+    }
+}
+window.updateLiveLevelMeter = updateLiveLevelMeter;
+
+function downsampleBuffer(buffer, inRate, outRate) {
+    if (!buffer || buffer.length === 0) return new Float32Array(0);
+    if (inRate === outRate) return buffer;
+    if (inRate < outRate) return buffer;
+    var ratio = inRate / outRate;
+    var newLen = Math.floor(buffer.length / ratio);
+    var result = new Float32Array(newLen);
+    for (var i = 0; i < newLen; i++) {
+        var srcIdx = i * ratio;
+        var idxFloor = Math.floor(srcIdx);
+        var idxCeil = Math.min(buffer.length - 1, idxFloor + 1);
+        var frac = srcIdx - idxFloor;
+        result[i] = buffer[idxFloor] * (1 - frac) + buffer[idxCeil] * frac;
+    }
+    return result;
+}
+
+function encodeWav(samples, sampleRate) {
+    sampleRate = sampleRate || 16000;
+    var numChannels = 1;
+    var bitsPerSample = 16;
+    var bytesPerSample = bitsPerSample / 8;
+    var blockAlign = numChannels * bytesPerSample;
+    var byteRate = sampleRate * blockAlign;
+    var dataSize = samples.length * bytesPerSample;
+    var buffer = new ArrayBuffer(44 + dataSize);
+    var view = new DataView(buffer);
+
+    function writeString(view, offset, string) {
+        for (var i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    }
+
+    // RIFF chunk descriptor
+    writeString(view, 0, 'RIFF');
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(view, 8, 'WAVE');
+
+    // fmt sub-chunk
+    writeString(view, 12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, numChannels, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, byteRate, true);
+    view.setUint16(32, blockAlign, true);
+    view.setUint16(34, bitsPerSample, true);
+
+    // data sub-chunk
+    writeString(view, 36, 'data');
+    view.setUint32(40, dataSize, true);
+
+    var offset = 44;
+    for (var i = 0; i < samples.length; i++, offset += 2) {
+        var s = Math.max(-1, Math.min(1, samples[i]));
+        var intSample = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        view.setInt16(offset, intSample, true);
+    }
+
+    return new Blob([buffer], { type: 'audio/wav' });
+}
+
+class WavStreamCapture {
+    constructor(stream, onChunk) {
+        this.stream = stream;
+        this.onChunk = onChunk;
+        this.audioCtx = null;
+        this.sourceNode = null;
+        this.processor = null;
+        this.silentGain = null;
+        this.accumulatedSamples = [];
+        this.accumulatedCount = 0;
+        this.targetChunkSamples = 24000; // 1.5 seconds at 16000 Hz
+        this.active = false;
+    }
+
+    async start() {
+        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) throw new Error("AudioContext not supported");
+
+        if (audioContext && audioContext.state !== 'closed') {
+            this.audioCtx = audioContext;
+        } else {
+            this.audioCtx = new AudioCtx();
+            audioContext = this.audioCtx;
+        }
+
+        if (this.audioCtx.state === 'suspended') {
+            await this.audioCtx.resume();
+        }
+
+        this.sourceNode = this.audioCtx.createMediaStreamSource(this.stream);
+        audioSourceNode = this.sourceNode;
+
+        if (!analyserNode) {
+            analyserNode = this.audioCtx.createAnalyser();
+            analyserNode.fftSize = 1024;
+            analyserNode.smoothingTimeConstant = 0.70;
+        }
+        try { this.sourceNode.connect(analyserNode); } catch (e) {}
+
+        this.processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+        this.silentGain = this.audioCtx.createGain();
+        this.silentGain.gain.value = 0.0;
+
+        var self = this;
+        var inRate = this.audioCtx.sampleRate;
+
+        this.processor.onaudioprocess = function(e) {
+            if (!self.active) return;
+            var channelData = e.inputBuffer.getChannelData(0);
+
+            var sumSq = 0;
+            for (var i = 0; i < channelData.length; i++) {
+                sumSq += channelData[i] * channelData[i];
+            }
+            var rms = Math.sqrt(sumSq / channelData.length);
+            var rmsDb = 20 * Math.log10(rms + 1e-6);
+            if (rmsDb < -90) rmsDb = -90;
+            if (rmsDb > 0) rmsDb = 0;
+            updateLiveLevelMeter(rmsDb);
+
+            var dsSamples = downsampleBuffer(channelData, inRate, 16000);
+            self.accumulatedSamples.push(dsSamples);
+            self.accumulatedCount += dsSamples.length;
+
+            if (self.accumulatedCount >= self.targetChunkSamples) {
+                var merged = new Float32Array(self.accumulatedCount);
+                var offset = 0;
+                for (var j = 0; j < self.accumulatedSamples.length; j++) {
+                    merged.set(self.accumulatedSamples[j], offset);
+                    offset += self.accumulatedSamples[j].length;
+                }
+
+                var chunk = merged.subarray(0, self.targetChunkSamples);
+                var remainder = merged.subarray(self.targetChunkSamples);
+
+                self.accumulatedSamples = remainder.length > 0 ? [remainder] : [];
+                self.accumulatedCount = remainder.length;
+
+                var wavBlob = encodeWav(chunk, 16000);
+                if (typeof self.onChunk === 'function') {
+                    self.onChunk(wavBlob);
+                }
+            }
+        };
+
+        this.sourceNode.connect(this.processor);
+        this.processor.connect(this.silentGain);
+        this.silentGain.connect(this.audioCtx.destination);
+        this.active = true;
+    }
+
+    stop() {
+        this.active = false;
+        if (this.processor) {
+            try {
+                this.processor.disconnect();
+                this.processor.onaudioprocess = null;
+            } catch (e) {}
+            this.processor = null;
+        }
+        if (this.silentGain) {
+            try { this.silentGain.disconnect(); } catch (e) {}
+            this.silentGain = null;
+        }
+        if (this.sourceNode) {
+            try { this.sourceNode.disconnect(); } catch (e) {}
+            this.sourceNode = null;
+        }
+        if (this.stream) {
+            try {
+                this.stream.getTracks().forEach(function(t) { t.stop(); });
+            } catch (e) {}
+            this.stream = null;
+        }
+        this.accumulatedSamples = [];
+        this.accumulatedCount = 0;
+        updateLiveLevelMeter(-90);
+    }
+}
+window.WavStreamCapture = WavStreamCapture;
+
+async function handleLiveWavChunk(blob) {
+    if (!callActive || isManualSimulation) return;
+    liveChunkCounter++;
+
+    var callBadge = document.getElementById('callStatusBadge');
+    if (callBadge) {
+        callBadge.textContent = "LISTENING • CHUNK #" + liveChunkCounter;
+        callBadge.className = "text-[12px] font-mono px-3 py-1 rounded-full bg-[var(--accent-cyan)]/25 border border-[var(--accent-cyan)] text-[var(--accent-cyan)] font-extrabold animate-pulse whitespace-nowrap";
+    }
+
+    try {
+        var fd = new FormData();
+        fd.append('file', blob, 'live_chunk.wav');
+        fd.append('session_id', liveSessionId);
+        fd.append('mode', 'live');
+
+        var resp = await fetch(API_BASE + '/api/score', {
+            method: 'POST',
+            body: fd
+        });
+        if (resp.ok) {
+            var data = await resp.json();
+            if (!data.error && callActive && !isManualSimulation) {
+                updateCombinedRiskUI(data);
+            }
+        }
+    } catch (err) {
+        console.warn("[LIVE SCORE] chunk post failed:", err);
+    }
+}
+window.handleLiveWavChunk = handleLiveWavChunk;
 
 function updateAudioSourceUI(source) {
     var btnMic = document.getElementById('btnSourceMic');
@@ -3687,248 +3963,198 @@ function updateAudioSourceUI(source) {
 }
 window.updateAudioSourceUI = updateAudioSourceUI;
 
+async function startLiveAudioSession(source) {
+    selectedAudioSource = source || selectedAudioSource || 'mic';
+    updateAudioSourceUI(selectedAudioSource);
+
+    // Cleanly stop any prior capture session
+    if (wavCaptureInstance) {
+        try { wavCaptureInstance.stop(); } catch (e) {}
+        wavCaptureInstance = null;
+    }
+    if (liveAudioStream) {
+        try { liveAudioStream.getTracks().forEach(function(t) { t.stop(); }); } catch (e) {}
+        liveAudioStream = null;
+    }
+
+    // Activate Call State & UI if not already active
+    if (!callActive) {
+        callActive = true;
+        isManualSimulation = false;
+        liveTranscriptHistory = [];
+        activeInterimText = '';
+        liveVoiceRisk = 10;
+        smoothedVoiceRisk = 10;
+        liveSessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+        liveChunkCounter = 0;
+        callStartTime = new Date();
+        startCallDuration();
+
+        var rVis = document.getElementById('ringingVisual');
+        var aVis = document.getElementById('activeVisual');
+        var inAct = document.getElementById('incomingActions');
+        var actCtrl = document.getElementById('activeControls');
+        if (rVis) rVis.classList.add('opacity-0', 'hidden');
+        if (aVis) { aVis.classList.remove('hidden', 'opacity-0'); }
+        if (inAct) inAct.classList.add('opacity-0', 'hidden');
+        if (actCtrl) {
+            actCtrl.classList.remove('hidden');
+            actCtrl.classList.add('flex');
+            actCtrl.classList.remove('opacity-0');
+        }
+
+        updateSpeakerIdentityUI('human');
+        renderTranscriptView();
+        updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
+        updateScriptNlpUI(0, null);
+        updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
+        updateCombinedRiskUI();
+    }
+
+    var callBadge = document.getElementById('callStatusBadge');
+    if (callBadge) {
+        callBadge.textContent = "LISTENING • CHUNK #0";
+        callBadge.className = "text-[12px] font-mono px-3 py-1 rounded-full bg-[var(--accent-cyan)]/25 border border-[var(--accent-cyan)] text-[var(--accent-cyan)] font-extrabold animate-pulse whitespace-nowrap";
+    }
+
+    var stream = null;
+    try {
+        if (selectedAudioSource === 'tab') {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                alert("Tab audio capture via getDisplayMedia is not supported in this browser. Please use Chrome or Edge.");
+                selectedAudioSource = 'mic';
+                updateAudioSourceUI('mic');
+                return;
+            }
+            stream = await navigator.mediaDevices.getDisplayMedia({
+                video: true,
+                audio: {
+                    systemAudio: "include",
+                    suppressLocalAudioPlayback: false
+                },
+                selfBrowserSurface: "exclude"
+            });
+            // Stop video tracks immediately
+            stream.getVideoTracks().forEach(function(track) { track.stop(); });
+            if (stream.getAudioTracks().length === 0) {
+                alert("No tab audio stream detected. Please ensure you selected a browser tab and checked 'Share tab audio' in the system dialog.");
+                stream.getTracks().forEach(function(t) { t.stop(); });
+                selectedAudioSource = 'mic';
+                updateAudioSourceUI('mic');
+                return;
+            }
+            var aTrack = stream.getAudioTracks()[0];
+            aTrack.onended = function() {
+                console.info("Tab audio stream ended");
+                if (callActive) {
+                    startLiveAudioSession('mic');
+                }
+            };
+        } else {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert("getUserMedia is not supported in this browser.");
+                return;
+            }
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: false,
+                    autoGainControl: false
+                }
+            });
+        }
+
+        liveAudioStream = stream;
+        stopFallbackWaveform();
+        setupWebAudioAnalyser(stream);
+
+        wavCaptureInstance = new WavStreamCapture(stream, handleLiveWavChunk);
+        await wavCaptureInstance.start();
+
+        if (!speechRecognition) {
+            speechRecognition = startSpeechRecognition();
+        }
+    } catch (err) {
+        if (err.name !== 'NotAllowedError') {
+            console.error("Audio capture error:", err);
+            alert("Could not acquire audio stream: " + (err.message || err));
+        }
+        if (!liveAudioStream) {
+            startFallbackWaveform();
+        }
+    }
+}
+window.startLiveAudioSession = startLiveAudioSession;
+
 async function selectAudioSource(source) {
     selectedAudioSource = source;
     updateAudioSourceUI(source);
-
-    if (source === 'tab') {
-        await startTabAudioCapture();
-    } else {
-        await startMicAudioCapture();
-    }
+    await startLiveAudioSession(source);
 }
 window.selectAudioSource = selectAudioSource;
 
 async function startTabAudioCapture() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-        alert("Tab audio capture via getDisplayMedia is not supported in this browser. Please use Chrome or Edge.");
-        selectedAudioSource = 'mic';
-        updateAudioSourceUI('mic');
-        return;
-    }
-    try {
-        var stream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: {
-                systemAudio: "include",
-                suppressLocalAudioPlayback: false
-            },
-            selfBrowserSurface: "exclude"
-        });
-
-        // 1. Stop video tracks immediately
-        stream.getVideoTracks().forEach(function(track) {
-            track.stop();
-        });
-
-        // 2. Alert cleanly if getAudioTracks().length === 0
-        if (stream.getAudioTracks().length === 0) {
-            alert("No tab audio stream detected. Please ensure you selected a browser tab and checked 'Share tab audio' in the system dialog.");
-            stream.getTracks().forEach(function(t) { t.stop(); });
-            selectedAudioSource = 'mic';
-            updateAudioSourceUI('mic');
-            return;
-        }
-
-        var audioTrack = stream.getAudioTracks()[0];
-        audioTrack.onended = function() {
-            console.info("Tab audio stream ended");
-            if (callActive) {
-                selectedAudioSource = 'mic';
-                updateAudioSourceUI('mic');
-                startMicAudioCapture();
-            }
-        };
-
-        attachLiveStream(stream, 'tab');
-    } catch (err) {
-        if (err.name !== 'NotAllowedError') {
-            console.error("Tab capture error:", err);
-            alert("Could not capture tab audio: " + (err.message || err));
-        }
-        selectedAudioSource = 'mic';
-        updateAudioSourceUI('mic');
-    }
+    await startLiveAudioSession('tab');
 }
 window.startTabAudioCapture = startTabAudioCapture;
 
 async function startMicAudioCapture() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        console.warn("getUserMedia is not available.");
-        return;
-    }
-    try {
-        var stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                noiseSuppression: false,
-                autoGainControl: false
-            }
-        });
-        attachLiveStream(stream, 'mic');
-    } catch (err) {
-        console.warn("Mic access notice:", err);
-    }
+    await startLiveAudioSession('mic');
 }
 window.startMicAudioCapture = startMicAudioCapture;
 
-function attachLiveStream(stream, source) {
-    selectedAudioSource = source;
-    updateAudioSourceUI(source);
-
-    if (!callActive) {
-        acceptCall(stream);
-        return;
-    }
-
-    if (liveAudioStream && liveAudioStream !== stream) {
-        try { liveAudioStream.getTracks().forEach(function(t) { t.stop(); }); } catch(e) {}
-    }
-
-    liveAudioStream = stream;
-    stopFallbackWaveform();
-    setupWebAudioAnalyser(stream);
-    startRecorderChunkLoop(stream);
-}
-
-function startRecorderChunkLoop(stream) {
-    if (mediaRecorder) {
-        try { mediaRecorder.stop(); } catch(e) {}
-        mediaRecorder = null;
-    }
-    if (!callActive || isManualSimulation || !stream) return;
-
-    try {
-        var mime = '';
-        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
-            mime = 'audio/webm;codecs=opus';
-        } else if (MediaRecorder.isTypeSupported('audio/webm')) {
-            mime = 'audio/webm';
-        }
-        var opts = mime ? { mimeType: mime } : {};
-
-        function recordChunk() {
-            if (!callActive || isManualSimulation || !liveAudioStream) return;
-            var currentRec = new MediaRecorder(liveAudioStream, opts);
-            var chunks = [];
-            currentRec.ondataavailable = function(e) {
-                if (e.data && e.data.size > 0) chunks.push(e.data);
-            };
-            currentRec.onstop = function() {
-                if (chunks.length > 0 && callActive && !isManualSimulation) {
-                    var fullBlob = new Blob(chunks, { type: currentRec.mimeType || 'audio/webm' });
-                    sendAudioChunkToBackend(fullBlob);
-                }
-                if (callActive && !isManualSimulation && liveAudioStream) {
-                    setTimeout(recordChunk, 40);
-                }
-            };
-            mediaRecorder = currentRec;
-            currentRec.start();
-            setTimeout(function() {
-                if (currentRec.state === 'recording') {
-                    try { currentRec.stop(); } catch(e) {}
-                }
-            }, 1000); // 1-second MediaRecorder chunk loop to /api/score
-        }
-
-        recordChunk();
-    } catch (mErr) {
-        console.warn("Recorder error:", mErr);
-    }
-}
-window.startRecorderChunkLoop = startRecorderChunkLoop;
-
-function acceptCall(existingStream) {
-    if (callActive) return;
-    callActive = true;
-    isManualSimulation = false;
-    liveTranscriptHistory = [];
-    activeInterimText = '';
-    liveVoiceRisk = 10;
-    smoothedVoiceRisk = 10;
-    speechFrameCounter = 0;
-    silenceFrameCounter = 0;
-    micWarmupGracePeriod = 25;
-    vocoderHitStreak = 0;
-    continuousVoicedMs = 0;
-    continuousVoicedFrames = 0;
-    sustainedSyntheticStreak = 0;
-    sustainedHumanStreak = 0;
-    dynamicLlr = -2.45;
-    lastAudioLoopTimestamp = 0;
-    syntheticVoiceHangover = 0;
-    latchedSpeakerIdentity = 'human';
-    liveScriptRisk = 0;
-    currentDetectedThreatCategory = null;
-    f0History = [];
-    sfmHistory = [];
-    hfverHistory = [];
-    frameEnergyHistory = [];
-    callStartTime = new Date();
-
-    startCallDuration();
-
-    var rVis = document.getElementById('ringingVisual');
-    var aVis = document.getElementById('activeVisual');
-    var inAct = document.getElementById('incomingActions');
-    var actCtrl = document.getElementById('activeControls');
-
-    if (rVis) rVis.classList.add('opacity-0', 'hidden');
-    if (aVis) {
-        aVis.classList.remove('hidden');
-        aVis.classList.remove('opacity-0');
-    }
-    if (inAct) inAct.classList.add('opacity-0', 'hidden');
-    if (actCtrl) {
-        actCtrl.classList.remove('hidden');
-        actCtrl.classList.add('flex');
-        actCtrl.classList.remove('opacity-0');
-    }
-
-    updateSpeakerIdentityUI('human');
-    renderTranscriptView();
-    updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-    updateScriptNlpUI(0, null);
-    updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
-    updateCombinedRiskUI();
-
-    startFallbackWaveform();
-
+async function acceptCall(existingStream) {
+    if (callActive && !existingStream) return;
     if (existingStream) {
+        callActive = true;
+        isManualSimulation = false;
+        liveTranscriptHistory = [];
+        activeInterimText = '';
+        liveVoiceRisk = 10;
+        smoothedVoiceRisk = 10;
+        liveSessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+        liveChunkCounter = 0;
+        callStartTime = new Date();
+        startCallDuration();
+
+        var rVis = document.getElementById('ringingVisual');
+        var aVis = document.getElementById('activeVisual');
+        var inAct = document.getElementById('incomingActions');
+        var actCtrl = document.getElementById('activeControls');
+        if (rVis) rVis.classList.add('opacity-0', 'hidden');
+        if (aVis) { aVis.classList.remove('hidden', 'opacity-0'); }
+        if (inAct) inAct.classList.add('opacity-0', 'hidden');
+        if (actCtrl) {
+            actCtrl.classList.remove('hidden');
+            actCtrl.classList.add('flex');
+            actCtrl.classList.remove('opacity-0');
+        }
+
+        updateSpeakerIdentityUI('human');
+        renderTranscriptView();
+        updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
+        updateScriptNlpUI(0, null);
+        updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
+        updateCombinedRiskUI();
+
+        if (wavCaptureInstance) {
+            try { wavCaptureInstance.stop(); } catch(e) {}
+            wavCaptureInstance = null;
+        }
         liveAudioStream = existingStream;
         stopFallbackWaveform();
         setupWebAudioAnalyser(existingStream);
-        startRecorderChunkLoop(existingStream);
-        speechRecognition = startSpeechRecognition();
-    } else if (window.appSettings && window.appSettings.liveMic) {
-        if (selectedAudioSource === 'tab') {
-            startTabAudioCapture();
-        } else {
-            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        noiseSuppression: false,
-                        autoGainControl: false
-                    }
-                })
-                .then(function(stream) {
-                    if (!callActive) {
-                        stream.getTracks().forEach(function(t) { t.stop(); });
-                        return;
-                    }
-                    liveAudioStream = stream;
-                    stopFallbackWaveform();
-                    setupWebAudioAnalyser(stream);
-                    startRecorderChunkLoop(stream);
-                })
-                .catch(function(err) {
-                    console.info('Live mic notice:', err);
-                });
-            }
+        wavCaptureInstance = new WavStreamCapture(existingStream, handleLiveWavChunk);
+        await wavCaptureInstance.start();
+        if (!speechRecognition) {
+            speechRecognition = startSpeechRecognition();
         }
-        speechRecognition = startSpeechRecognition();
+        return;
     }
+    await startLiveAudioSession(selectedAudioSource);
 }
+window.acceptCall = acceptCall;
+window.answerCall = acceptCall;
 
 function resetCall() {
     if (callActive) {
@@ -3951,11 +4177,18 @@ function resetCall() {
     lastAudioLoopTimestamp = 0;
     syntheticVoiceHangover = 0;
     latchedSpeakerIdentity = 'standby';
+    liveChunkCounter = 0;
     f0History = [];
     sfmHistory = [];
     hfverHistory = [];
     frameEnergyHistory = [];
     stopCallDuration();
+
+    if (wavCaptureInstance) {
+        try { wavCaptureInstance.stop(); } catch (e) {}
+        wavCaptureInstance = null;
+    }
+
     teardownWebAudio();
     stopSpeechRecognition();
     stopEmergencySiren();
@@ -3976,6 +4209,7 @@ function resetCall() {
         } catch (e) {}
         liveAudioStream = null;
     }
+    updateLiveLevelMeter(-90);
     updateChannelCalibrationUI("WIDEBAND CLEAN", "High neural certainty · Direct acoustic match");
 
     liveTranscriptHistory = [];
@@ -4047,9 +4281,6 @@ function resetCall() {
         try { fetch(API_BASE + '/api/reset', { method: 'POST' }); } catch (e) {}
     }
 }
-
-window.acceptCall = acceptCall;
-window.answerCall = acceptCall;
 window.resetCall = resetCall;
 
 // ============================================================================

@@ -34,14 +34,17 @@ def fix_length(y, n):
     return np.tile(y, reps)[:n]
 
 
-def energy_vad(y, sr=SR, frame_ms=25, hop_ms=10, rel_db=30.0):
+def energy_vad(y, sr=SR, frame_ms=25, hop_ms=10, rel_db=30.0, abs_db=-55.0):
     fl = int(sr * frame_ms / 1000)
     hl = int(sr * hop_ms / 1000)
     if len(y) < fl:
         return np.ones(len(y), dtype=bool)
     frames = librosa.util.frame(y, frame_length=fl, hop_length=hl)
-    e = 20 * np.log10(np.sqrt(np.mean(frames ** 2, axis=0)) + 1e-9)
-    keep = e > (e.max() - rel_db)
+    rms_frames = np.sqrt(np.mean(frames ** 2, axis=0)) + 1e-9
+    e = 20 * np.log10(rms_frames)
+    if float(np.max(e)) < abs_db:
+        return np.zeros(len(y), dtype=bool)
+    keep = (e > (e.max() - rel_db)) & (e > abs_db)
     mask = np.zeros(len(y), dtype=bool)
     for i, k in enumerate(keep):
         if k:
