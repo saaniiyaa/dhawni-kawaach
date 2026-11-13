@@ -2558,22 +2558,15 @@
           var y = i * binHeight;
 
           var r = 0, g = 0, bVal = 0;
-          if (emergencyActive || liveVoiceRisk >= 70) {
+          if (emergencyActive && currentDashboardState === "CRITICAL_THREAT") {
             r = Math.floor(255 * Math.min(1, energy * 1.35));
             g = Math.floor(45 * energy);
             bVal = Math.floor(65 * energy);
-          } else if (liveVoiceRisk >= 35) {
-            r = Math.floor(245 * energy);
-            g = Math.floor(165 * energy);
-            bVal = Math.floor(25 * energy);
-          } else if (callActive) {
-            r = Math.floor(10 * energy);
-            g = Math.floor(235 * energy);
-            bVal = Math.floor(240 * energy);
           } else {
-            r = Math.floor(15 * energy);
-            g = Math.floor(180 * energy);
-            bVal = Math.floor(240 * energy);
+            // Keep cyan / emerald (#06b6d4 / #10b981) whenever tier !== "HOLD" and coercion not triggered
+            r = Math.floor(6 * energy);
+            g = Math.floor(215 * energy);
+            bVal = Math.floor(225 * energy);
           }
 
           ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + bVal + ')';
@@ -2936,125 +2929,17 @@
             silenceFrameCounter++;
             speechFrameCounter = Math.max(0, speechFrameCounter - 1);
             continuousVoicedMs = Math.max(0, continuousVoicedMs - (dt * 1.5));
-            sustainedSyntheticStreak = Math.max(0, sustainedSyntheticStreak - 1);
-
-            if (dynamicLlr > -2.45) {
-              dynamicLlr = Math.max(-2.45, dynamicLlr - 0.12);
-            }
-
             var gateNotice = document.getElementById('noiseGateNotice');
             if (gateNotice) gateNotice.textContent = "Silence Gate (<16% Idle)";
-
-            if (!isManualSimulation) {
-              if (now < syntheticVoiceHangover) {
-                updateSpeakerIdentityUI('ai');
-                smoothedVoiceRisk = Math.max(82, smoothedVoiceRisk * 0.99);
-                liveVoiceRisk = Math.round(smoothedVoiceRisk);
-                updateVoiceAuthUI(liveVoiceRisk, 8, "SYNTHETIC AI VOICE CLONE DETECTED");
-                updateXaiMetrics(xaiJitter, 14.8, dynamicLlr, "UNNATURAL VOCAL SPECTRUM");
-              } else {
-                // Natural decay to biological human baseline
-                smoothedVoiceRisk = Math.max(10, smoothedVoiceRisk * 0.95);
-                liveVoiceRisk = Math.round(smoothedVoiceRisk);
-                if (silenceFrameCounter > 45 && latchedSpeakerIdentity !== 'standby') {
-                  latchedSpeakerIdentity = 'standby';
-                  updateSpeakerIdentityUI('standby');
-                }
-                updateVoiceAuthUI(liveVoiceRisk, 90, "AUTHENTIC HUMAN SPEECH");
-                updateXaiMetrics(xaiJitter, 0.08, dynamicLlr, "CLEAN / BIOLOGICAL");
-              }
-              updateCombinedRiskUI();
-            }
           } else {
-            // 2. VALID SPEECH ENERGY DETECTED
+            // 2. VALID SPEECH ENERGY DETECTED (Visual / VAD level update only - never triggers threat)
             isVoiceActive = true;
             silenceFrameCounter = 0;
             speechFrameCounter++;
             continuousVoicedMs += dt;
             continuousVoicedFrames++;
-
             var gateNoticeActive = document.getElementById('noiseGateNotice');
             if (gateNoticeActive) gateNoticeActive.textContent = "Speech Active (" + (continuousVoicedMs / 1000).toFixed(1) + "s)";
-
-            if (!isManualSimulation) {
-              // REQUIRE A MINIMUM VOICED SPEECH BUFFER OF 1.5 SECONDS (at least 3-4 continuous audio frames)
-              // before computing a synthetic verdict. A single word like "hello" must NEVER trigger an alert.
-              if (continuousVoicedMs < 1500) {
-                // Buffering speech: strictly safe human greeting
-                sustainedSyntheticStreak = 0;
-                dynamicLlr = -2.45;
-                liveVoiceRisk = 10;
-                smoothedVoiceRisk = 10;
-                latchedSpeakerIdentity = 'human';
-                updateSpeakerIdentityUI('human');
-                updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-                updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
-                updateCombinedRiskUI();
-              } else {
-                // Sustained Voiced Speech >= 1.5s: Run acoustic DSP calculations
-                var sr = audioContext.sampleRate || 44100;
-                var dspResult = computeAcousticDspFeatures(freqData, timeData, sr);
-
-                // BIOLOGICAL HUMAN VOICE CALIBRATION (ZERO FALSE POSITIVES):
-                // If audio exhibits frame-to-frame pitch fluctuation > 4% and dynamic energy variation > 0.002,
-                // classify strictly as:
-                // * Status: "AUTHENTIC HUMAN SPEECH"
-                // * Acoustic Synthetics: <= 12%
-                // * Vocoder Artifacts: "CLEAN / BIOLOGICAL"
-                // * Overall Risk Gauge: 8% - 15% (SAFE, GREEN)
-                if (dspResult.isHumanBiological) {
-                  sustainedSyntheticStreak = 0;
-                  sustainedHumanStreak++;
-                  dynamicLlr = Math.max(-2.85, dynamicLlr - 0.35);
-                  liveVoiceRisk = 10;
-                  smoothedVoiceRisk = 10;
-                  latchedSpeakerIdentity = 'human';
-                  syntheticVoiceHangover = 0;
-                  updateSpeakerIdentityUI('human');
-                  updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-                  updateXaiMetrics(dspResult.jitter, 0.08, dynamicLlr, "CLEAN / BIOLOGICAL");
-                  updateCombinedRiskUI();
-                } else if (dspResult.isSyntheticFrame) {
-                  // SUSTAINED AI SYNTHETIC DETECTOR:
-                  // Neural vocoders (HiFi-GAN, WaveGlow, ElevenLabs) generate speech with unnaturally
-                  // consistent pitch contour, elevated spectral flatness in the 2.5 kHz - 6 kHz band,
-                  // and near-zero micro-jitter (< 0.4%).
-                  sustainedHumanStreak = 0;
-                  sustainedSyntheticStreak++;
-
-                  // Increment Evidence LLR gradually (+0.8 dB per confirmed synthetic frame)
-                  dynamicLlr = Math.min(5.2, dynamicLlr + 0.80);
-
-                  // Require 3+ consecutive confirmed frames to cross +3.0 dB threshold:
-                  if (sustainedSyntheticStreak >= 3 && dynamicLlr >= 3.0 && continuousVoicedMs >= 1500) {
-                    syntheticVoiceHangover = now + 5000;
-                    latchedSpeakerIdentity = 'ai';
-                    var cloneScore = Math.min(92, Math.max(85, Math.round(85 + ((dynamicLlr - 3.0) * 3))));
-                    liveVoiceRisk = cloneScore;
-                    smoothedVoiceRisk = liveVoiceRisk;
-                    updateSpeakerIdentityUI('ai');
-                    updateVoiceAuthUI(liveVoiceRisk, 8, "SYNTHETIC AI VOICE CLONE DETECTED");
-                    updateXaiMetrics(dspResult.jitter, 14.8, dynamicLlr, "UNNATURAL VOCAL SPECTRUM");
-                    updateCombinedRiskUI();
-                  } else {
-                    updateXaiMetrics(dspResult.jitter, 5.0, dynamicLlr, "MODERATE");
-                  }
-                } else {
-                  // Non-synthetic, standard speech
-                  sustainedSyntheticStreak = Math.max(0, sustainedSyntheticStreak - 1);
-                  if (dynamicLlr > -2.45) dynamicLlr = Math.max(-2.45, dynamicLlr - 0.20);
-                  if (now >= syntheticVoiceHangover) {
-                    liveVoiceRisk = 10;
-                    smoothedVoiceRisk = 10;
-                    latchedSpeakerIdentity = 'human';
-                    updateSpeakerIdentityUI('human');
-                    updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-                    updateXaiMetrics(dspResult.jitter, 0.08, dynamicLlr, "CLEAN / BIOLOGICAL");
-                    updateCombinedRiskUI();
-                  }
-                }
-              }
-            }
           }
 
           analyserFrameId = requestAnimationFrame(audioLoop);
@@ -3359,6 +3244,13 @@
     function resetSafeGreenUI() {
       emergencyActive = false;
       if (typeof stopEmergencySiren === 'function') stopEmergencySiren();
+
+      // Ensure Biometric Override button is hidden
+      var btnBio = document.getElementById('btnBiometricOverride');
+      if (btnBio) {
+        btnBio.classList.add('hidden');
+        btnBio.style.display = 'none';
+      }
 
       // 1. Hide phone's red warning box immediately so it never lingers
       var threatBanner = document.getElementById('threatBanner');
@@ -3832,6 +3724,72 @@
     }
     window.renderDashboardState = renderDashboardState;
 
+    function appendOrUpdateStreamTranscript(cleanText) {
+      if (!cleanText || typeof cleanText !== 'string' || !cleanText.trim()) return;
+      cleanText = cleanText.trim();
+      var streamEntry = '[STREAM] ' + cleanText;
+      var logBox = document.getElementById('extortionStreamLog') || document.getElementById('transcriptFeed');
+
+      var updated = false;
+      if (liveTranscriptHistory.length > 0) {
+        var lastEntry = liveTranscriptHistory[liveTranscriptHistory.length - 1];
+        var lastRaw = lastEntry.replace(/^>*\s*\[STREAM\]\s*/i, '').trim();
+
+        var lLow = lastRaw.toLowerCase();
+        var cLow = cleanText.toLowerCase();
+
+        // 1. Extension or prefix match:
+        if (cLow.indexOf(lLow) === 0 || lLow.indexOf(cLow) === 0) {
+          if (cleanText.length >= lastRaw.length) {
+            liveTranscriptHistory[liveTranscriptHistory.length - 1] = streamEntry;
+          }
+          updated = true;
+        } else {
+          // 2. Word overlap check (>= 60% overlap)
+          var wordsLast = lLow.split(/\s+/).filter(Boolean);
+          var wordsNew = cLow.split(/\s+/).filter(Boolean);
+          if (wordsLast.length > 0 && wordsNew.length > 0) {
+            var setLast = {};
+            for (var i = 0; i < wordsLast.length; i++) setLast[wordsLast[i]] = true;
+            var common = 0;
+            for (var j = 0; j < wordsNew.length; j++) {
+              if (setLast[wordsNew[j]]) common++;
+            }
+            var overlapRatio = common / Math.min(wordsLast.length, wordsNew.length);
+            if (overlapRatio >= 0.60) {
+              if (wordsNew.length >= wordsLast.length) {
+                liveTranscriptHistory[liveTranscriptHistory.length - 1] = streamEntry;
+              }
+              updated = true;
+            }
+          }
+        }
+      }
+
+      if (!updated && window._lastStreamTranscript !== cleanText) {
+        window._lastStreamTranscript = cleanText;
+        liveTranscriptHistory.push(streamEntry);
+      }
+
+      if (logBox) {
+        if (logBox.id === 'transcriptFeed') {
+          renderTranscriptView();
+        } else {
+          var lastP = logBox.lastElementChild;
+          if (updated && lastP) {
+            lastP.textContent = '> [STREAM] ' + cleanText;
+          } else if (!updated) {
+            var p = document.createElement('p');
+            p.className = "text-[var(--text-primary)] text-[15px] font-bold leading-[1.75] break-words";
+            p.textContent = '> [STREAM] ' + cleanText;
+            logBox.appendChild(p);
+            logBox.scrollTop = logBox.scrollHeight;
+          }
+        }
+      }
+    }
+    window.appendOrUpdateStreamTranscript = appendOrUpdateStreamTranscript;
+
     // ============================================================================
     // 11. AGGREGATE RISK COMPUTATION & MULTI-FRAUD DEFENSE ENFORCEMENT
     // ============================================================================
@@ -3842,36 +3800,29 @@
         }
         if (data.transcript && typeof data.transcript === 'string' && data.transcript.trim()) {
           var cleanText = data.transcript.trim();
-          var logBox = document.getElementById('extortionStreamLog') || document.getElementById('transcriptFeed');
-          if (logBox) {
-            var streamLine = '> [STREAM] ' + cleanText;
-            if (window._lastStreamTranscript !== cleanText) {
-              window._lastStreamTranscript = cleanText;
-              if (logBox.id === 'transcriptFeed') {
-                liveTranscriptHistory.push('[STREAM] ' + cleanText);
-                renderTranscriptView();
-              } else {
-                var p = document.createElement('p');
-                p.className = "text-[var(--text-primary)] text-[15px] font-bold leading-[1.75] break-words";
-                p.textContent = streamLine;
-                logBox.appendChild(p);
-                logBox.scrollTop = logBox.scrollHeight;
-              }
-            }
+          appendOrUpdateStreamTranscript(cleanText);
+        }
+        if (data.nlp_coercion && typeof data.nlp_coercion === 'object') {
+          liveScriptRisk = data.nlp_coercion.riskScore !== undefined ? data.nlp_coercion.riskScore : liveScriptRisk;
+          if (data.nlp_coercion.topThreat) {
+            currentDetectedThreatCategory = data.nlp_coercion.topThreat;
           }
-          if (typeof classifyTranscript === 'function') {
-            var nlpRes = classifyTranscript(cleanText);
-            if (nlpRes && nlpRes.riskScore > 0) {
-              liveScriptRisk = Math.max(liveScriptRisk, nlpRes.riskScore);
-              currentDetectedThreatCategory = nlpRes.topThreat || currentDetectedThreatCategory;
-              if (typeof updateScriptNlpUI === 'function') {
-                updateScriptNlpUI(nlpRes.riskScore, nlpRes.topThreat, nlpRes.coercionIntent);
-              }
+          if (typeof updateScriptNlpUI === 'function') {
+            updateScriptNlpUI(liveScriptRisk, currentDetectedThreatCategory, data.nlp_coercion.coercionIntent);
+          }
+        } else if (data.transcript && typeof classifyTranscript === 'function') {
+          var nlpRes = classifyTranscript(data.transcript);
+          if (nlpRes && nlpRes.riskScore > 0) {
+            liveScriptRisk = Math.max(liveScriptRisk, nlpRes.riskScore);
+            currentDetectedThreatCategory = nlpRes.topThreat || currentDetectedThreatCategory;
+            if (typeof updateScriptNlpUI === 'function') {
+              updateScriptNlpUI(nlpRes.riskScore, nlpRes.topThreat, nlpRes.coercionIntent);
             }
           }
         }
         var rawScore = data.calibrated_prob !== undefined ? data.calibrated_prob : (data.call_p !== undefined ? data.call_p : data.window_p);
         var tier = (data.calibrated_tier || data.tier || '').toUpperCase();
+        if (tier) window._lastBackendTier = tier;
         var isAiThreat = tier === 'HOLD' || tier === 'HIGH_RISK' || rawScore >= 0.70;
         var isWarn = tier === 'WARN' || tier === 'SUSPICIOUS' || (rawScore >= 0.38 && rawScore < 0.70);
 
@@ -3999,11 +3950,12 @@
       if (scoreEl) scoreEl.textContent = overallRisk + '%';
 
       // 2. CRITICAL THREAT (Risk >= 70% or manual lock)
-      var callTier = (data && (data.calibrated_tier || data.tier) ? (data.calibrated_tier || data.tier) : '').toUpperCase();
-      var isSafeCall = (callTier !== 'HOLD' && overallRisk < 50);
+      var callTier = (data && (data.calibrated_tier || data.tier) ? (data.calibrated_tier || data.tier) : (window._lastBackendTier || 'ALLOW')).toUpperCase();
+      var isSafeCall = (callTier !== 'HOLD' && liveScriptRisk < 70 && !manualBankingLock);
 
-      // Whenever tier !== "HOLD", automatically run resetSafeGreenUI() to clear all red styles
-      if (callTier !== 'HOLD') {
+      // Whenever safe human call, automatically run resetSafeGreenUI() to clear all red styles
+      if (isSafeCall) {
+        overallRisk = Math.max(8, Math.min(18, liveVoiceRisk));
         resetSafeGreenUI();
       }
 
@@ -4537,23 +4489,7 @@
         }
         if (data.transcript && typeof data.transcript === 'string' && data.transcript.trim()) {
           var cleanText = data.transcript.trim();
-          var logBox = document.getElementById('extortionStreamLog') || document.getElementById('transcriptFeed');
-          if (logBox) {
-            var streamLine = '> [STREAM] ' + cleanText;
-            if (window._lastStreamTranscript !== cleanText) {
-              window._lastStreamTranscript = cleanText;
-              if (logBox.id === 'transcriptFeed') {
-                liveTranscriptHistory.push('[STREAM] ' + cleanText);
-                renderTranscriptView();
-              } else {
-                var p = document.createElement('p');
-                p.className = "text-[var(--text-primary)] text-[15px] font-bold leading-[1.75] break-words";
-                p.textContent = streamLine;
-                logBox.appendChild(p);
-                logBox.scrollTop = logBox.scrollHeight;
-              }
-            }
-          }
+          appendOrUpdateStreamTranscript(cleanText);
           if (typeof classifyTranscript === 'function') {
             var nlpRes = classifyTranscript(cleanText);
             if (nlpRes && nlpRes.riskScore > 0) {
@@ -4569,8 +4505,9 @@
         if (!callActive) acceptCall();
         isManualSimulation = true;
 
-        var winP = data.window_p !== undefined ? data.window_p : (data.call_p || 0);
-        var isHigh = (winP >= 0.70 || data.tier === 'HIGH_RISK');
+        var winP = data.calibrated_prob !== undefined ? data.calibrated_prob : (data.window_p !== undefined ? data.window_p : (data.call_p || 0));
+        var tier = (data.calibrated_tier || data.tier || '').toUpperCase();
+        var isHigh = (tier === 'HOLD' || tier === 'HIGH_RISK' || winP >= 0.70);
         var cnnRisk = isHigh ? Math.min(92, Math.max(88, Math.round(winP * 100))) : 10;
         liveVoiceRisk = cnnRisk;
         smoothedVoiceRisk = cnnRisk;
@@ -4591,7 +4528,7 @@
           updateXaiMetrics(4.85, 0.08, dynamicLlr, "CLEAN / BIOLOGICAL");
         }
 
-        updateCombinedRiskUI();
+        updateCombinedRiskUI(data);
         logCallSession(cnnRisk, "📁 File: " + file.name);
 
         if (uploadLabel) uploadLabel.textContent = "Analyzed: " + file.name.slice(0, 18) + " (" + cnnRisk + "%)";
@@ -4876,6 +4813,8 @@
       async start(sourceType) {
         if (sourceType) this.sourceType = sourceType;
         liveSessionId = "sess_" + Date.now();
+        window._lastBackendTier = 'ALLOW';
+        window._lastStreamTranscript = '';
         fetch('/api/reset', { method: 'POST' }).catch(function () { });
         resetSafeGreenUI();
 
@@ -5428,6 +5367,8 @@
       updateVoiceAuthUI(10, 90, "10% (HUMAN)");
       updateScriptNlpUI(0, null, "CLEAN");
       updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
+      window._lastBackendTier = 'ALLOW';
+      window._lastStreamTranscript = '';
       resetSafeGreenUI();
       updateCombinedRiskUI();
 
@@ -7100,7 +7041,8 @@
       phonepe: 'phonepe.com', amazon: 'amazon.in', flipkart: 'flipkart.com', irctc: 'irctc.co.in',
       hdfc: 'hdfcbank.com', icici: 'icicibank.com', axis: 'axisbank.com', sbi: 'onlinesbi.sbi',
       netflix: 'netflix.com', uidai: 'uidai.gov.in', aadhaar: 'uidai.gov.in'
-    };]=['otp', 'kyc', 'verify', 'update', 'blocked', 'refund', 'winner', 'prize', 'claim', 'gift', 'lucky', 'urgent', 'login', 'secure', 'account', 'cibil', 'pan-card'];
+    };
+    var DKKEYS = ['otp', 'kyc', 'verify', 'update', 'blocked', 'refund', 'winner', 'prize', 'claim', 'gift', 'lucky', 'urgent', 'login', 'secure', 'account', 'cibil', 'pan-card'];
     function dkNorm(s) { return s.toLowerCase().replace(/0/g, 'o').replace(/1/g, 'l').replace(/3/g, 'e').replace(/4/g, 'a').replace(/5/g, 's').replace(/7/g, 't').replace(/@/g, 'a').replace(/\$/g, 's').replace(/rn/g, 'm').replace(/vv/g, 'w').replace(/[-_.]/g, ''); }
     function dkReg(h) { var p = h.split('.'); var n = p.length; if (n >= 3 && ['co.in', 'gov.in', 'net.in', 'org.in', 'ac.in', 'res.in'].indexOf(p.slice(-2).join('.')) > -1) return p.slice(-3).join('.'); return p.slice(-2).join('.'); }
     function dkExtract(t) { var re = /((?:https?:\/\/|www\.)[^\s]+|[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?)/gi; var m, out = [], seen = {}; while ((m = re.exec(t))) { var u = m[1].replace(/[.,!)\'\"]+$/, ''); if (!seen[u]) { seen[u] = 1; out.push(u); } } return out; }

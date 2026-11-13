@@ -72,14 +72,14 @@ def evaluate_channel_and_calibrate(
 
     if stype == "mic":
         # Laptop / mobile microphone capture with room acoustics & hardware roll-off:
-        # Require prob >= 0.78 to count as a synthetic chunk candidate
-        if prob >= 0.78:
+        # Require prob >= 0.85 to count as a synthetic chunk candidate
+        if prob >= 0.85:
             tier = "HOLD"
             calibrated_prob = round(max(prob, 0.88), 4)
             uncertainty_note = "Acoustic anomaly detected • Synthetic vocoder profile candidate"
         else:
             tier = "ALLOW"
-            calibrated_prob = round(min(prob * 0.25, 0.20), 4)
+            calibrated_prob = round(min(prob * 0.25, 0.18), 4)
             uncertainty_note = (
                 "Ambient/degraded channel • Human vocal profile"
                 if is_degraded

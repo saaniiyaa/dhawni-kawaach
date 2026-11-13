@@ -618,15 +618,16 @@ def api_score():
                     smoothed = round(0.88 * prev_ema + 0.12 * cal_prob, 4)
 
                 if source_type == "mic":
-                    # Mic: require 3 consecutive synthetic chunks (ai_streak >= 3, ~4.5s) to latch HOLD
-                    if calib["tier"] == "HOLD":
+                    # Mic: require raw_prob >= 0.85 for 4 consecutive chunks (ai_streak >= 4, ~6.0s) to latch HOLD
+                    is_mic_ai_cand = (calib["tier"] == "HOLD" and raw_ai_prob >= 0.85)
+                    if is_mic_ai_cand:
                         sess_data["human_streak"] = 0
                         sess_data["ai_streak"] = sess_data.get("ai_streak", 0) + 1
-                        if sess_data["ai_streak"] >= 3:
+                        if sess_data["ai_streak"] >= 4:
                             sess_data["latched_hold"] = True
                         else:
                             tier = "ALLOW"
-                            smoothed = min(smoothed, 0.22)
+                            smoothed = min(smoothed, 0.20)
                     else:
                         sess_data["ai_streak"] = 0
                         sess_data["human_streak"] = sess_data.get("human_streak", 0) + 1
@@ -638,7 +639,7 @@ def api_score():
                         smoothed = round(max(smoothed, 0.88), 4)
                     else:
                         tier = "ALLOW"
-                        smoothed = min(smoothed, 0.22)
+                        smoothed = min(smoothed, 0.20)
 
                 else:
                     # Tab audio: require 2 consecutive synthetic chunks (ai_streak >= 2, ~3.0s) to latch HOLD
