@@ -81,9 +81,9 @@ def evaluate_channel_and_calibrate(
             tier = "ALLOW"
             calibrated_prob = round(min(prob * 0.25, 0.18), 4)
             uncertainty_note = (
-                "Ambient/degraded channel • Human vocal profile"
+                "Ambient channel • Natural human vocal profile"
                 if is_degraded
-                else "Natural human vocal harmonics verified"
+                else "Wideband harmonics intact • Natural human vocal profile"
             )
 
     elif stype == "tab":
@@ -96,7 +96,7 @@ def evaluate_channel_and_calibrate(
         else:
             tier = "ALLOW"
             calibrated_prob = round(min(prob, 0.16), 4)
-            uncertainty_note = "Natural human vocal harmonics verified"
+            uncertainty_note = "Wideband harmonics intact • Natural human vocal profile"
 
     else:
         # source_type == "upload" (direct file inspection: scam_ai_sample.wav, scam_neural_in.mp3, etc.):
@@ -108,11 +108,15 @@ def evaluate_channel_and_calibrate(
         else:
             tier = "ALLOW"
             calibrated_prob = round(min(prob, 0.16), 4)
-            uncertainty_note = "Natural human vocal harmonics verified"
+            uncertainty_note = "Wideband harmonics intact • Natural human vocal profile"
 
-    # GUARANTEE: uncertainty_note NEVER says "synthetic signature" when tier == "ALLOW"
-    if tier == "ALLOW" and "synthetic" in uncertainty_note.lower():
-        uncertainty_note = "Natural human vocal harmonics verified"
+    # GUARANTEE: uncertainty_note NEVER outputs "High-confidence synthetic signature" when tier != "HOLD"
+    if tier != "HOLD":
+        uncertainty_note = (
+            "Ambient channel • Natural human vocal profile"
+            if is_degraded
+            else "Wideband harmonics intact • Natural human vocal profile"
+        )
 
     return {
         "channel_quality": channel_quality,

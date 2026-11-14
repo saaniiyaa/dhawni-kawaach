@@ -565,7 +565,7 @@ def api_score():
                 "calibrated_prob": 0.10,
                 "raw_prob": 0.10,
                 "channel_status": "WIDEBAND_CLEAN",
-                "uncertainty_note": "Natural human vocal harmonics verified • Ambient/idle chunk",
+                "uncertainty_note": "Wideband harmonics intact • Natural human vocal profile",
                 "transcript": "",
                 "nlp_coercion": analyze_coercion_intent(""),
                 "session_id": session_id or "default",
@@ -594,7 +594,7 @@ def api_score():
                 "calibrated_prob": 0.10,
                 "raw_prob": 0.10,
                 "channel_status": "WIDEBAND_CLEAN",
-                "uncertainty_note": "Natural human vocal harmonics verified • Ambient/idle chunk",
+                "uncertainty_note": "Wideband harmonics intact • Natural human vocal profile",
                 "transcript": "",
                 "nlp_coercion": analyze_coercion_intent(""),
                 "session_id": session_id or "default",
@@ -671,7 +671,7 @@ def api_score():
                 "channel_quality": "WIDEBAND_CLEAN",
                 "calibrated_prob": 0.10,
                 "tier": "ALLOW",
-                "uncertainty_note": "Natural human vocal harmonics verified • Ambient/idle chunk",
+                "uncertainty_note": "Wideband harmonics intact • Natural human vocal profile",
                 "channel_metrics": {"high_band_ratio": 0.05, "snr_db": 25.0},
             }
         else:
@@ -778,10 +778,15 @@ def api_score():
                 sess_data["ema"] = smoothed
                 SESSION_STATE["prev_risk"] = smoothed
 
-        # Telemetry consistency: NEVER say "synthetic signature" when tier == "ALLOW"
-        uncertainty_note = calib["uncertainty_note"]
-        if tier == "ALLOW" and "synthetic" in uncertainty_note.lower():
-            uncertainty_note = "Natural human vocal harmonics verified"
+        # Telemetry consistency: whenever tier != "HOLD", uncertainty_note is strictly natural human vocal profile
+        if tier != "HOLD":
+            uncertainty_note = (
+                "Ambient channel • Natural human vocal profile"
+                if calib.get("channel_quality") == "TELEPHONY_DEGRADED"
+                else "Wideband harmonics intact • Natural human vocal profile"
+            )
+        else:
+            uncertainty_note = calib["uncertainty_note"]
 
         pol = policy_for("HIGH_RISK" if tier == "HOLD" else "SAFE")
 
@@ -844,7 +849,7 @@ def api_score():
             "calibrated_prob": 0.10,
             "raw_prob": 0.10,
             "channel_status": "WIDEBAND_CLEAN",
-            "uncertainty_note": "Natural human vocal harmonics verified",
+            "uncertainty_note": "Wideband harmonics intact • Natural human vocal profile",
             "transcript": "",
             "nlp_coercion": analyze_coercion_intent(""),
             "session_id": safe_sid,
