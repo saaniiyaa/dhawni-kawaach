@@ -2352,6 +2352,146 @@
       return (str || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
     }
 
+    
+    // ============================================================================
+    // REAL-TIME KEYWORD COERCION ENGINE (TIER 1 SCAM & TIER 2 EXTORTION)
+    // ============================================================================
+    var TIER1_KEYWORDS = [
+      'cbi', 'police', 'arrest', 'warrant', 'customs', 'narcotics', 'ed',
+      'supreme court', 'rbi', 'trai', 'kyc', 'otp', 'upi', 'transfer',
+      'bank account', 'parcel', 'seized', 'bail', 'fine', 'paise', 'account block'
+    ];
+
+    var TIER2_PHRASES = [
+      'digital arrest', 'cbi arrest', 'arrest warrant', 'transfer money',
+      'send money', 'paise bhejo', 'share otp', 'scan qr'
+    ];
+
+    var loggedKeywordAlerts = {};
+
+    function logKeywordAlert(keywords, riskScore, tier) {
+      var key = keywords.slice().sort().join('|') + '_' + tier;
+      var now = Date.now();
+      if (loggedKeywordAlerts[key] && (now - loggedKeywordAlerts[key]) < 10000) {
+        return;
+      }
+      loggedKeywordAlerts[key] = now;
+
+      console.warn('[KEYWORD ALERT] Matched (' + (tier === 2 ? 'Tier 2 Extortion ' : 'Tier 1 Scam ') + riskScore + '%):', keywords.join(', '));
+      var logsContainer = document.getElementById('logsContainer');
+      if (!logsContainer) return;
+      var timeStr = new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      var isSevere = tier === 2 || riskScore >= 75;
+      var statusText = isSevere ? '🚨 EXTORTION ALERT' : '⚠️ COERCION ALERT';
+      var statusClass = isSevere
+        ? 'bg-[var(--accent-crimson)]/20 text-[var(--accent-crimson)] border-[var(--accent-crimson)]/40'
+        : 'bg-[var(--accent-amber)]/20 text-[var(--accent-amber)] border-[var(--accent-amber)]/40';
+
+      var item = '<div class="p-3.5 rounded-xl bg-[var(--bg-card-sub)] border border-[var(--border-card)] flex justify-between items-center my-1">' +
+        '<div>' +
+        '<div class="font-bold text-[var(--text-primary)] text-[13.5px]">[KEYWORD ALERT] ' + (isSevere ? 'Extortion Pattern' : 'Scam Indicators') + ' — ' + riskScore + '%</div>' +
+        '<div class="text-[12px] text-[var(--text-muted)] font-mono">Matched: ' + keywords.join(', ') + ' • ' + timeStr + '</div>' +
+        '</div>' +
+        '<span class="text-[11px] font-extrabold px-2.5 py-1 rounded border ' + statusClass + '">' + statusText + '</span>' +
+        '</div>';
+
+      if (logsContainer.children && logsContainer.children.length === 1 && logsContainer.children[0].textContent && logsContainer.children[0].textContent.indexOf('No call incidents') !== -1) {
+        logsContainer.innerHTML = item;
+      } else {
+        logsContainer.insertAdjacentHTML('afterbegin', item);
+      }
+    }
+
+    function computeLiveKeywordRisk(text) {
+      if (!text || typeof text !== 'string') {
+        return {
+          riskScore: 0,
+          tier: 0,
+          level: 'CLEAN',
+          matchedKeywords: [],
+          topThreat: null
+        };
+      }
+
+      var lower = text.toLowerCase();
+      var matchedTier2 = [];
+      for (var i = 0; i < TIER2_PHRASES.length; i++) {
+        var p = TIER2_PHRASES[i];
+        if (lower.indexOf(p) !== -1) {
+          matchedTier2.push(p);
+        }
+      }
+
+      var matchedTier1 = [];
+      for (var j = 0; j < TIER1_KEYWORDS.length; j++) {
+        var kw = TIER1_KEYWORDS[j];
+        if (kw.indexOf(' ') !== -1) {
+          if (lower.indexOf(kw) !== -1) {
+            matchedTier1.push(kw);
+          }
+        } else {
+          var esc = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          var reg = new RegExp('(^|[^a-zA-Z0-9])' + esc + '([^a-zA-Z0-9]|$)', 'i');
+          if (reg.test(lower)) {
+            matchedTier1.push(kw);
+          }
+        }
+      }
+
+      var combinedMatches = [];
+      for (var m2 = 0; m2 < matchedTier2.length; m2++) {
+        if (combinedMatches.indexOf(matchedTier2[m2]) === -1) combinedMatches.push(matchedTier2[m2]);
+      }
+      for (var m1 = 0; m1 < matchedTier1.length; m1++) {
+        if (combinedMatches.indexOf(matchedTier1[m1]) === -1) combinedMatches.push(matchedTier1[m1]);
+      }
+
+      if (matchedTier2.length > 0 || matchedTier1.length >= 2) {
+        // Tier 2 Extortion / Multi-Keyword (88% - 96% CRITICAL THREAT - Crimson)
+        var score = Math.min(96, 88 + ((matchedTier2.length * 2) + Math.max(0, matchedTier1.length - 2)));
+        logKeywordAlert(combinedMatches, score, 2);
+        return {
+          riskScore: score,
+          tier: 2,
+          level: 'CRITICAL_THREAT',
+          matchedKeywords: combinedMatches,
+          topThreat: {
+            label: 'DIGITAL EXTORTION',
+            alertTitle: '🚨 CRITICAL EXTORTION COERCION DETECTED',
+            alertDetail: 'High-severity extortion indicators detected (' + combinedMatches.slice(0, 3).join(', ') + ')',
+            chipClass: 'kw-chip-urgency',
+            icon: '🚨'
+          }
+        };
+      } else if (matchedTier1.length === 1) {
+        // Tier 1 Scam Keywords (55% - 68% SUSPICIOUS COERCION - Amber)
+        var score1 = 62;
+        logKeywordAlert(matchedTier1, score1, 1);
+        return {
+          riskScore: score1,
+          tier: 1,
+          level: 'SUSPICIOUS_COERCION',
+          matchedKeywords: matchedTier1,
+          topThreat: {
+            label: 'SUSPICIOUS KEYWORD',
+            alertTitle: '⚠️ SUSPICIOUS COERCION INDICATOR',
+            alertDetail: 'Keyword indicator detected: ' + matchedTier1[0],
+            chipClass: 'kw-chip-authority',
+            icon: '⚠️'
+          }
+        };
+      }
+
+      return {
+        riskScore: 0,
+        tier: 0,
+        level: 'CLEAN',
+        matchedKeywords: [],
+        topThreat: null
+      };
+    }
+    window.computeLiveKeywordRisk = computeLiveKeywordRisk;
+
     function classifyTranscript(text) {
       if (!text || text.trim() === '') {
         threatEngineState.pillarTimestamps = { authority: 0, coercion: 0, financial_urgency: 0 };
@@ -2599,9 +2739,15 @@
       tempCanvas.height = h;
       var tempCtx = tempCanvas.getContext('2d');
 
-      var isLight = document.documentElement.classList.contains('theme-light') || document.documentElement.classList.contains('light');
-      ctx.fillStyle = isLight ? '#1E293B' : '#0B1224';
+      ctx.fillStyle = '#040d14';
       ctx.fillRect(0, 0, w, h);
+      tempCtx.fillStyle = '#040d14';
+      tempCtx.fillRect(0, 0, w, h);
+
+      if (spectralAnimId) {
+        cancelAnimationFrame(spectralAnimId);
+        spectralAnimId = null;
+      }
 
       function drawMatrix() {
         if (!canvas) return;
@@ -2610,56 +2756,81 @@
         if (canvas.width !== newW || canvas.height !== newH) {
           canvas.width = tempCanvas.width = newW;
           canvas.height = tempCanvas.height = newH;
+          ctx.fillStyle = '#040d14';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          tempCtx.fillStyle = '#040d14';
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
         }
 
+        // STANDBY / IDLE: Clear to pure dark #040d14 (no synthetic/dummy sine waves)
+        if (!callActive && !activeUploadHold) {
+          ctx.fillStyle = '#040d14';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          tempCtx.fillStyle = '#040d14';
+          tempCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+          spectralAnimId = requestAnimationFrame(drawMatrix);
+          return;
+        }
+
+        // Active waterfall: scroll left 2px
         tempCtx.drawImage(canvas, 0, 0);
         ctx.drawImage(tempCanvas, -2, 0);
 
-        var slice = [];
         var numBins = 48;
+        var slice = [];
 
-        if (callActive && analyserNode) {
+        if (analyserNode) {
           var freqData = new Uint8Array(analyserNode.frequencyBinCount);
           analyserNode.getByteFrequencyData(freqData);
+
+          // 0 - 8 kHz frequency range mapping
+          var nyquist = (audioContext && audioContext.sampleRate) ? (audioContext.sampleRate / 2) : 24000;
+          var maxBin8k = Math.min(freqData.length, Math.max(1, Math.floor((8000 / nyquist) * freqData.length)));
+
           for (var b = 0; b < numBins; b++) {
-            var idx = Math.floor((b / numBins) * (freqData.length / 2));
-            slice.push(freqData[idx] / 255);
-          }
-        } else if (callActive) {
-          var t = Date.now() * 0.005;
-          for (var s = 0; s < numBins; s++) {
-            var val = Math.sin(t + s * 0.3) * 0.4 + Math.cos(t * 0.7 - s * 0.2) * 0.3 + 0.3;
-            if (emergencyActive) val += Math.random() * 0.4;
-            slice.push(Math.max(0, Math.min(1, val)));
+            var idx = Math.floor((b / numBins) * maxBin8k);
+            slice.push(freqData[idx] / 255.0);
           }
         } else {
-          var tIdle = Date.now() * 0.002;
-          for (var k = 0; k < numBins; k++) {
-            var idleWave = Math.sin(tIdle + k * 0.15) * 0.08 + 0.05;
-            slice.push(idleWave);
-          }
+          for (var b = 0; b < numBins; b++) slice.push(0);
+        }
+
+        var currentRisk = Math.max(liveVoiceRisk || 0, liveScriptRisk || 0);
+        if (window._lastBackendTier === 'HOLD' || activeUploadHold || emergencyActive) {
+          currentRisk = Math.max(currentRisk, 88);
         }
 
         var binHeight = canvas.height / numBins;
         var x = canvas.width - 2;
 
         for (var i = 0; i < numBins; i++) {
+          // Low frequencies at bottom (i = 0), high frequencies (up to 8kHz) at top (i = numBins-1)
           var energy = slice[numBins - 1 - i];
           var y = i * binHeight;
 
           var r = 0, g = 0, bVal = 0;
-          if (emergencyActive && (window._lastBackendTier === "HOLD" || (typeof liveScriptRisk !== "undefined" && liveScriptRisk >= 70))) {
-            r = Math.floor(255 * Math.min(1, energy * 1.35));
-            g = Math.floor(45 * energy);
-            bVal = Math.floor(65 * energy);
+          if (currentRisk >= 75) {
+            // Crimson (#ef4444) for risk >= 75%
+            r = Math.floor(239 * Math.min(1, energy * 1.35));
+            g = Math.floor(68 * energy);
+            bVal = Math.floor(68 * energy);
+          } else if (currentRisk >= 45) {
+            // Amber (#f59e0b) for 45% <= risk < 75%
+            r = Math.floor(245 * Math.min(1, energy * 1.35));
+            g = Math.floor(158 * energy);
+            bVal = Math.floor(11 * energy);
           } else {
-            // Keep cyan / emerald (#06b6d4 / #10b981) whenever tier !== "HOLD" and coercion not triggered
+            // Emerald/Cyan (#06b6d4 / #10b981) for risk < 45%
             r = Math.floor(6 * energy);
-            g = Math.floor(215 * energy);
-            bVal = Math.floor(225 * energy);
+            g = Math.floor(200 * energy);
+            bVal = Math.floor(212 * energy);
           }
 
-          ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + bVal + ')';
+          if (energy < 0.03) {
+            ctx.fillStyle = '#040d14';
+          } else {
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + bVal + ')';
+          }
           ctx.fillRect(x, y, 2, binHeight + 1);
         }
 
@@ -2927,34 +3098,53 @@
     // ============================================================================
     // 7. WEBAUDIO ANALYSER WITH ANTI-FLICKER HYSTERESIS
     // ============================================================================
-    function setupWebAudioAnalyser(stream) {
+    function setupWebAudioAnalyser(sourceInput) {
       try {
         var AudioCtx = window.AudioContext || window.webkitAudioContext;
         if (!AudioCtx) return;
-        audioContext = new AudioCtx();
+        if (!audioContext || audioContext.state === 'closed') {
+          audioContext = new AudioCtx();
+        }
         if (audioContext.state === 'suspended') {
           audioContext.resume().catch(function (e) { console.warn(e); });
         }
 
-        analyserNode = audioContext.createAnalyser();
+        if (!analyserNode) {
+          analyserNode = audioContext.createAnalyser();
+        }
         analyserNode.fftSize = 1024;
-        analyserNode.smoothingTimeConstant = 0.70;
+        analyserNode.smoothingTimeConstant = 0.65;
 
-        audioSourceNode = audioContext.createMediaStreamSource(stream);
-        audioSourceNode.connect(analyserNode);
+        if (audioSourceNode) {
+          try { audioSourceNode.disconnect(); } catch (e) { }
+          audioSourceNode = null;
+        }
+
+        var isMediaEl = (sourceInput instanceof HTMLMediaElement) ||
+                        (sourceInput && (sourceInput.tagName === 'AUDIO' || typeof sourceInput.play === 'function'));
+
+        if (isMediaEl) {
+          audioSourceNode = audioContext.createMediaElementSource(sourceInput);
+          audioSourceNode.connect(analyserNode);
+          audioSourceNode.connect(audioContext.destination);
+        } else if (sourceInput) {
+          audioSourceNode = audioContext.createMediaStreamSource(sourceInput);
+          audioSourceNode.connect(analyserNode);
+        }
 
         var freqData = new Uint8Array(analyserNode.frequencyBinCount);
         var timeData = new Uint8Array(analyserNode.fftSize);
         var waveBars = document.querySelectorAll('#activeVisual .wave-bar');
 
-        micWarmupGracePeriod = 35; // First ~0.6s ignore mic transients
+        micWarmupGracePeriod = 20;
+
+        if (analyserFrameId) {
+          cancelAnimationFrame(analyserFrameId);
+          analyserFrameId = null;
+        }
 
         function audioLoop() {
-          if (!callActive) return;
-          if (activeUploadHold) {
-            analyserFrameId = requestAnimationFrame(audioLoop);
-            return;
-          }
+          if (!callActive && !activeUploadHold) return;
 
           analyserNode.getByteTimeDomainData(timeData);
           analyserNode.getByteFrequencyData(freqData);
@@ -2975,17 +3165,20 @@
           var rmsEnergyPct = Math.min(100, Math.round(rms * 400));
           liveAudioLevel = rmsEnergyPct;
 
+          var levelEl = document.getElementById('audioLevelDisplay');
+          if (levelEl) levelEl.textContent = liveAudioLevel;
+
           var overallRisk = Math.min(99, Math.max(0, Math.max(liveVoiceRisk, liveScriptRisk)));
-          var isBackendHold = (window._lastBackendTier === 'HOLD');
+          var isBackendHold = (window._lastBackendTier === 'HOLD') || activeUploadHold;
           if (!emergencyActive && !isBackendHold && (!isVoiceActive || overallRisk < 35)) {
             overallRisk = Math.min(15, overallRisk);
           }
-          var waveStroke = 'var(--accent-emerald)';
-          var isCrimson = emergencyActive || isBackendHold || overallRisk >= 70;
+          var waveStroke = '#10b981';
+          var isCrimson = emergencyActive || isBackendHold || overallRisk >= 75;
           if (isCrimson) {
-            waveStroke = 'var(--accent-crimson)';
-          } else if (overallRisk >= 35) {
-            waveStroke = 'var(--accent-amber)';
+            waveStroke = '#ef4444';
+          } else if (overallRisk >= 45) {
+            waveStroke = '#f59e0b';
           }
 
           if (waveBars && waveBars.length > 0) {
@@ -3003,8 +3196,12 @@
             }
           }
 
-          var levelEl = document.getElementById('audioLevelDisplay');
-          if (levelEl) levelEl.textContent = liveAudioLevel;
+          if (activeUploadHold) {
+            var gateNoticeHold = document.getElementById('noiseGateNotice');
+            if (gateNoticeHold) gateNoticeHold.textContent = "Audio Forensic Inspection Active";
+            analyserFrameId = requestAnimationFrame(audioLoop);
+            return;
+          }
 
           if (micWarmupGracePeriod > 0) {
             micWarmupGracePeriod--;
@@ -3016,13 +3213,9 @@
           var dt = lastAudioLoopTimestamp > 0 ? Math.min(100, Math.max(5, now - lastAudioLoopTimestamp)) : 16.6;
           lastAudioLoopTimestamp = now;
 
-          // 1. SPEECH ACTIVITY & NOISE GATE (VAD):
-          // Set an Adaptive Energy Floor: RMS Energy must be >= 16% to register as valid speech.
-          // Do NOT run vocoder or spectral flatness calculations during ambient room silence, mic hiss, or breath noises.
           var isSpeechEnergy = (rmsEnergyPct >= NOISE_GATE_RMS_FLOOR_PCT && rms >= 0.016 && avgEnergy >= 7.0);
 
           if (!isSpeechEnergy) {
-            // Ambient silence / hiss / breath noise below 16% energy floor
             isVoiceActive = false;
             silenceFrameCounter++;
             speechFrameCounter = Math.max(0, speechFrameCounter - 1);
@@ -3030,7 +3223,6 @@
             var gateNotice = document.getElementById('noiseGateNotice');
             if (gateNotice) gateNotice.textContent = "Silence Gate (<16% Idle)";
           } else {
-            // 2. VALID SPEECH ENERGY DETECTED (Visual / VAD level update only - never triggers threat)
             isVoiceActive = true;
             silenceFrameCounter = 0;
             speechFrameCounter++;
@@ -3174,11 +3366,13 @@
           renderTranscriptView();
 
           var fullText = liveTranscriptHistory.concat([activeInterimText]).join(' ');
+          var kwResult = computeLiveKeywordRisk(fullText);
           var nlpResult = classifyTranscript(fullText);
-          liveScriptRisk = nlpResult.riskScore;
-          currentDetectedThreatCategory = nlpResult.topThreat;
 
-          updateScriptNlpUI(nlpResult.riskScore, nlpResult.topThreat, nlpResult.coercionIntent);
+          liveScriptRisk = Math.max(nlpResult.riskScore, kwResult.riskScore);
+          currentDetectedThreatCategory = kwResult.topThreat || nlpResult.topThreat;
+
+          updateScriptNlpUI(liveScriptRisk, currentDetectedThreatCategory, kwResult.level !== 'CLEAN' ? kwResult.level : nlpResult.coercionIntent, kwResult.matchedKeywords);
           updateCombinedRiskUI();
         };
 
@@ -3317,26 +3511,27 @@
       }
     }
 
-    function updateScriptNlpUI(riskPercent, topThreat, intentLevel) {
+    function updateScriptNlpUI(riskPercent, topThreat, intentLevel, matchedKeywords) {
       var bar = document.getElementById('barScriptNlp');
       var badge = document.getElementById('scriptBadge');
 
       if (bar && badge) {
-        var label = intentLevel || (riskPercent >= 70 ? "SEVERE" : (riskPercent >= 40 ? "ELEVATED" : (riskPercent >= 20 ? "MONITORING" : "CLEAN")));
-        if (riskPercent >= 70) {
+        var kwSuffix = (matchedKeywords && matchedKeywords.length > 0) ? " [" + matchedKeywords.slice(0, 2).join(', ') + "]" : "";
+        var label = intentLevel || (riskPercent >= 75 ? ("SEVERE" + kwSuffix) : (riskPercent >= 45 ? ("COERCION" + kwSuffix) : (riskPercent >= 20 ? "MONITORING" : "CLEAN")));
+        if (riskPercent >= 75) {
           bar.style.width = riskPercent + '%';
           bar.style.background = 'var(--accent-crimson)';
           badge.textContent = label;
-          badge.className = 'text-[14px] text-[var(--accent-crimson)] font-extrabold ml-1 truncate';
-        } else if (riskPercent >= 30) {
+          badge.className = 'text-[13px] text-[var(--accent-crimson)] font-extrabold ml-1 truncate';
+        } else if (riskPercent >= 45) {
           bar.style.width = riskPercent + '%';
           bar.style.background = 'var(--accent-amber)';
           badge.textContent = label;
-          badge.className = 'text-[15px] text-[var(--accent-amber)] font-extrabold ml-1';
+          badge.className = 'text-[13px] text-[var(--accent-amber)] font-extrabold ml-1 truncate';
         } else {
           bar.style.width = Math.max(5, riskPercent) + '%';
           bar.style.background = 'var(--accent-emerald)';
-          badge.textContent = label;
+          badge.textContent = "CLEAN";
           badge.className = 'text-[15px] text-[var(--accent-emerald)] font-extrabold ml-1';
         }
       }
@@ -3357,10 +3552,10 @@
       '</div>';
     window.DEFAULT_ASSET_SHIELD_HTML = DEFAULT_ASSET_SHIELD_HTML;
 
-    function resetSafeGreenUI(targetScore) {
+    function resetSafeGreenUI(targetScore, currentLlr) {
       emergencyActive = false;
       manualBankingLock = false;
-      var scoreVal = targetScore !== undefined ? targetScore : (callActive ? 10 : 0);
+      var scoreVal = targetScore !== undefined ? targetScore : (callActive ? (liveVoiceRisk || 10) : 0);
       liveVoiceRisk = scoreVal;
       smoothedVoiceRisk = scoreVal;
       liveScriptRisk = 0;
@@ -3489,9 +3684,11 @@
       }
       var llrVal = document.getElementById('xaiLlrVal');
       if (llrVal) {
+        var llrDisplay = currentLlr !== undefined ? currentLlr : (xaiLlr !== undefined && xaiLlr !== 0 ? xaiLlr : -2.45);
+        var llrStr = typeof llrDisplay === 'number' ? ((llrDisplay >= 0 ? '+' : '') + llrDisplay.toFixed(2) + ' dB') : String(llrDisplay);
         llrVal.className = 'text-[13.5px] font-extrabold ml-1';
         llrVal.style.color = '#34d399';
-        llrVal.textContent = '-2.45 dB';
+        llrVal.textContent = llrStr;
       }
 
       // Explicitly set emerald-green styling on ALL status pills & bars
@@ -4001,6 +4198,9 @@
       if (activeUploadHold && (!data || (data.mode !== 'upload' && data.source_type !== 'upload'))) {
         return;
       }
+      var acousticRiskPct = liveVoiceRisk;
+      var dynamicLlr = (xaiLlr !== undefined && xaiLlr !== 0) ? xaiLlr : -2.45;
+
       if (data && typeof data === 'object') {
         var tier = (data.calibrated_tier || data.tier || '').toUpperCase();
         var rawScore = data.calibrated_prob !== undefined ? data.calibrated_prob : (data.call_p !== undefined ? data.call_p : data.window_p);
@@ -4017,50 +4217,41 @@
           var cleanText = data.transcript.trim();
           appendOrUpdateStreamTranscript(cleanText);
         }
+
+        // Dynamic Acoustic Risk & Logit LLR from raw probability p: LLR = ln(p / (1 - p))
+        var p = rawScore !== undefined ? rawScore : (callActive ? 0.10 : 0.05);
+        p = Math.max(0.001, Math.min(0.999, p));
+        acousticRiskPct = Math.round(p * 100);
+        dynamicLlr = data.llr !== undefined ? data.llr : Math.log(p / (1.0 - p));
+
         if (data.nlp_coercion && typeof data.nlp_coercion === 'object') {
-          liveScriptRisk = data.nlp_coercion.riskScore !== undefined ? data.nlp_coercion.riskScore : liveScriptRisk;
+          var nlpScore = (data.nlp_coercion.score !== undefined ? Math.round(data.nlp_coercion.score * 100) : (data.nlp_coercion.riskScore || 0));
+          liveScriptRisk = Math.max(liveScriptRisk, nlpScore);
           if (data.nlp_coercion.topThreat) {
             currentDetectedThreatCategory = data.nlp_coercion.topThreat;
           }
-          if (typeof updateScriptNlpUI === 'function') {
-            updateScriptNlpUI(liveScriptRisk, currentDetectedThreatCategory, data.nlp_coercion.coercionIntent);
-          }
-        } else if (data.transcript && typeof classifyTranscript === 'function') {
-          var nlpRes = classifyTranscript(data.transcript);
-          if (nlpRes && nlpRes.riskScore > 0) {
-            liveScriptRisk = Math.max(liveScriptRisk, nlpRes.riskScore);
-            currentDetectedThreatCategory = nlpRes.topThreat || currentDetectedThreatCategory;
-            if (typeof updateScriptNlpUI === 'function') {
-              updateScriptNlpUI(nlpRes.riskScore, nlpRes.topThreat, nlpRes.coercionIntent);
-            }
-          }
         }
-        var isAiThreat = tier === 'HOLD' || tier === 'HIGH_RISK' || rawScore >= 0.70;
-        var isWarn = tier === 'WARN' || tier === 'SUSPICIOUS' || (rawScore >= 0.38 && rawScore < 0.70);
+
+        var isAiThreat = (tier === 'HOLD' || tier === 'HIGH_RISK' || acousticRiskPct >= 70);
+        var isWarn = (tier === 'WARN' || tier === 'SUSPICIOUS' || (acousticRiskPct >= 38 && acousticRiskPct < 70));
+
+        liveVoiceRisk = acousticRiskPct;
+        smoothedVoiceRisk = acousticRiskPct;
 
         if (isAiThreat) {
           syntheticVoiceHangover = Date.now() + 5000;
           dkBeep();
           latchedSpeakerIdentity = 'ai';
-          liveVoiceRisk = Math.min(96, Math.max(85, Math.round((rawScore || 0.88) * 100)));
-          smoothedVoiceRisk = liveVoiceRisk;
-          dynamicLlr = data.llr !== undefined ? data.llr : 3.85;
           updateSpeakerIdentityUI('ai');
           updateVoiceAuthUI(liveVoiceRisk, 100 - liveVoiceRisk, data.uncertainty_note || "SYNTHETIC AI VOICE CLONE DETECTED");
           updateXaiMetrics(0.24, 14.8, dynamicLlr, "UNNATURAL VOCAL SPECTRUM");
         } else if (isWarn) {
-          liveVoiceRisk = Math.max(45, Math.min(68, Math.round((rawScore || 0.50) * 100)));
-          smoothedVoiceRisk = liveVoiceRisk;
-          dynamicLlr = data.llr !== undefined ? data.llr : 0.8;
           updateSpeakerIdentityUI('warning');
           updateVoiceAuthUI(liveVoiceRisk, 100 - liveVoiceRisk, data.uncertainty_note || "UNCERTAIN / VERIFY CALLER");
           updateXaiMetrics(1.8, 5.0, dynamicLlr, "MODERATE ANOMALY");
         } else {
           syntheticVoiceHangover = 0;
           latchedSpeakerIdentity = 'human';
-          liveVoiceRisk = Math.max(8, Math.min(15, Math.round((rawScore || 0.10) * 100)));
-          smoothedVoiceRisk = liveVoiceRisk;
-          dynamicLlr = -2.45;
           updateSpeakerIdentityUI('human');
           var authNote = (data.uncertainty_note && data.uncertainty_note.indexOf('synthetic') === -1)
             ? data.uncertainty_note
@@ -4070,22 +4261,46 @@
         }
       }
 
-      // SCRIPT/INTENT INDEPENDENCE:
-      // Case 1: If speech is confirmed synthetic AI, risk automatically escalates to 85%+ (Critical)
-      // even with generic speech, because voice impersonation is inherently malicious in this threat model.
-      // Case 2: If speech is authentic human, overall risk is determined solely by the 3-Pillar Extortion state-machine.
-      var overallRisk;
-      if (liveVoiceRisk >= 75) {
-        overallRisk = Math.max(85, Math.max(liveVoiceRisk, liveScriptRisk));
-      } else {
-        if (liveScriptRisk >= 35) {
-          overallRisk = liveScriptRisk;
+      // Live Keyword Detection on complete transcript
+      var fullTrans = liveTranscriptHistory.concat([activeInterimText || '']).join(' ');
+      if (data && data.transcript && typeof data.transcript === 'string') {
+        fullTrans = (fullTrans + ' ' + data.transcript).trim();
+      }
+      var kwEval = computeLiveKeywordRisk(fullTrans);
+      if (kwEval.riskScore > 0) {
+        liveScriptRisk = Math.max(liveScriptRisk, kwEval.riskScore);
+        if (kwEval.topThreat) currentDetectedThreatCategory = kwEval.topThreat;
+        updateScriptNlpUI(liveScriptRisk, currentDetectedThreatCategory, kwEval.level, kwEval.matchedKeywords);
+      }
+
+      // Combined Risk Engine: finalRiskPct = Math.max(acousticRiskPct, keywordRiskPct)
+      var finalRiskPct = Math.max(liveVoiceRisk, liveScriptRisk);
+      var callTier = (data && (data.calibrated_tier || data.tier) ? (data.calibrated_tier || data.tier) : (window._lastBackendTier || 'ALLOW')).toUpperCase();
+      if (callTier === 'HOLD' || activeUploadHold) {
+        finalRiskPct = Math.max(finalRiskPct, 88);
+      }
+      var overallRisk = Math.min(99, Math.max(0, Math.round(finalRiskPct)));
+
+      // Render Dynamic Logit LLR Readout
+      var llrVal = document.getElementById('xaiLlrVal');
+      var llrBar = document.getElementById('xaiLlrBar');
+      if (llrVal) {
+        llrVal.textContent = (dynamicLlr >= 0 ? '+' : '') + dynamicLlr.toFixed(2) + ' dB';
+      }
+      if (llrBar) {
+        var normPct = Math.min(100, Math.max(5, Math.round(((dynamicLlr + 5) / 10) * 100)));
+        llrBar.style.width = normPct + '%';
+        if (dynamicLlr >= 0.5 || overallRisk >= 75) {
+          llrBar.style.backgroundColor = '#ef4444';
+          if (llrVal) llrVal.style.color = '#ef4444';
+        } else if (dynamicLlr >= -0.5 || overallRisk >= 45) {
+          llrBar.style.backgroundColor = '#f59e0b';
+          if (llrVal) llrVal.style.color = '#f59e0b';
         } else {
-          // Human baseline: strictly 8% - 15% (SAFE, GREEN)
-          overallRisk = Math.max(8, Math.min(15, liveVoiceRisk));
+          llrBar.style.backgroundColor = '#10b981';
+          if (llrVal) llrVal.style.color = '#34d399';
         }
       }
-      overallRisk = Math.min(99, Math.max(0, Math.round(overallRisk)));
 
       var scoreEl = document.getElementById('riskScoreNumber');
       var labelEl = document.getElementById('riskScoreLabel');
@@ -4107,7 +4322,7 @@
         threatBannerTimeout = null;
       }
 
-      // 1. STANDBY / INCOMING STATE (Call Not Active)
+      // Standby / Call Inactive
       if (!callActive) {
         if (gaugePath) {
           gaugePath.setAttribute('stroke-dasharray', '0, 100');
@@ -4134,10 +4349,6 @@
           headerStatusText.className = 'text-[13.5px] font-mono font-extrabold tracking-wider text-[var(--header-badge-text)] uppercase whitespace-nowrap';
           var hDot = headerStatusText.previousElementSibling;
           if (hDot) hDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
-          if (headerStatusText.parentElement) {
-            headerStatusText.parentElement.style.borderColor = '';
-            headerStatusText.parentElement.style.background = '';
-          }
         }
         if (mobileStatusText) {
           mobileStatusText.textContent = 'SYSTEM SECURE • I4C 1930 READY';
@@ -4146,11 +4357,8 @@
           if (mDot) mDot.className = 'w-2.5 h-2.5 rounded-full bg-[var(--accent-emerald)] animate-pulse';
         }
 
-        if (threatBanner) {
-          threatBanner.classList.add('opacity-0', 'hidden');
-        }
+        if (threatBanner) threatBanner.classList.add('opacity-0', 'hidden');
         if (threatVectorsChips) threatVectorsChips.innerHTML = '';
-
         if (callerCard) callerCard.classList.remove('emergency-strobe');
         if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
         if (pulseRing) pulseRing.classList.remove('danger');
@@ -4164,29 +4372,24 @@
       if (gaugePath) gaugePath.setAttribute('stroke-dasharray', overallRisk + ', 100');
       if (scoreEl) scoreEl.textContent = overallRisk + '%';
 
-      // 2. CRITICAL THREAT (Risk >= 70% or manual lock)
-      var callTier = (data && (data.calibrated_tier || data.tier) ? (data.calibrated_tier || data.tier) : (window._lastBackendTier || 'ALLOW')).toUpperCase();
-      var isSafeCall = (callTier !== 'HOLD' && liveScriptRisk < 70 && !manualBankingLock);
+      var isCritical = (overallRisk >= 75 || callTier === 'HOLD' || activeUploadHold || manualBankingLock);
+      var isSuspicious = (!isCritical && overallRisk >= 45);
 
-      // Whenever safe human call, automatically run resetSafeGreenUI() to clear all red styles
-      if (isSafeCall) {
-        overallRisk = Math.max(8, Math.min(18, liveVoiceRisk));
-        resetSafeGreenUI();
-      }
-
-      if (!isSafeCall && (overallRisk >= 70 || manualBankingLock)) {
+      if (isCritical) {
         emergencyActive = true;
-        if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-crimson)] leading-none animate-pulse';
+        if (scoreEl) {
+          scoreEl.textContent = overallRisk + '%';
+          scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-crimson)] leading-none animate-pulse';
+        }
         if (labelEl) {
           labelEl.textContent = "CRITICAL THREAT";
           labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-crimson)] uppercase tracking-wider mt-1 animate-pulse';
         }
-        if (gaugePath) gaugePath.style.stroke = 'var(--accent-crimson)';
+        if (gaugePath) {
+          gaugePath.setAttribute('stroke-dasharray', overallRisk + ', 100');
+          gaugePath.style.stroke = 'var(--accent-crimson)';
+        }
 
-        // Clear separation of concerns:
-        // Case A: AI Voice Clone + Extortion Script (Dual Threat)
-        // Case B: Pure AI Voice Clone (Benign / Normal Script)
-        // Case C: Human Impersonator + Extortion Script
         var threatBannerTitleText = "🚨 CRITICAL THREAT DETECTED";
         var threatBannerDetailText = "High risk security anomaly detected";
         var vocalProsodyText = "SYNTHETIC AI VOICE CLONE DETECTED";
@@ -4234,7 +4437,6 @@
           if (threatDetail) threatDetail.textContent = threatBannerDetailText;
         }
 
-        // Render dynamic attack vector chips
         if (threatVectorsChips) {
           var chips = '';
           if (liveVoiceRisk >= 70) {
@@ -4257,31 +4459,32 @@
         if (phoneChassis) phoneChassis.classList.add('emergency-strobe');
         if (pulseRing) pulseRing.classList.add('danger');
 
-        // Trigger siren on critical threat
         startEmergencySiren();
+        updateBankingPolicyUI(true, currentDetectedThreatCategory);
 
-        // Autonomous banking freeze engages at risk >= 75% or manual lock
-        var shouldFreeze = overallRisk >= 75 || manualBankingLock;
-        updateBankingPolicyUI(shouldFreeze, currentDetectedThreatCategory);
-
-      } else if (!isSafeCall && overallRisk >= 35) {
-        // 3. SUSPICIOUS / CAUTION (Risk 35% - 69%)
+      } else if (isSuspicious) {
         emergencyActive = false;
         stopEmergencySiren();
 
-        if (scoreEl) scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-amber)] leading-none';
+        if (scoreEl) {
+          scoreEl.textContent = overallRisk + '%';
+          scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-amber)] leading-none';
+        }
         if (labelEl) {
           labelEl.textContent = "SUSPICIOUS";
           labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-amber)] uppercase tracking-wider mt-1';
         }
-        if (gaugePath) gaugePath.style.stroke = 'var(--accent-amber)';
+        if (gaugePath) {
+          gaugePath.setAttribute('stroke-dasharray', overallRisk + ', 100');
+          gaugePath.style.stroke = 'var(--accent-amber)';
+        }
 
         if (vocalProsodyLabel) {
-          vocalProsodyLabel.textContent = "UNUSUAL PROSODY / CAUTION";
+          vocalProsodyLabel.textContent = "UNUSUAL PROSODY / COERCION DETECTED";
           vocalProsodyLabel.className = "mt-3 text-center text-[13.5px] font-mono font-extrabold text-[var(--accent-amber)] bg-[var(--accent-amber)]/20 px-4 py-1.5 rounded-full border border-[var(--accent-amber)] tracking-wider whitespace-nowrap";
         }
         if (statusPill) {
-          statusPill.textContent = "CAUTION ADVISED";
+          statusPill.textContent = "SUSPICIOUS PATTERN";
           statusPill.className = "text-[13px] font-mono px-3.5 py-1.5 rounded-full bg-[var(--accent-amber)]/20 border border-[var(--accent-amber)] text-[var(--accent-amber)] font-extrabold whitespace-nowrap";
         }
         if (headerStatusText) {
@@ -4301,8 +4504,8 @@
           threatBanner.style.display = '';
           threatBanner.classList.remove('hidden');
           threatBanner.classList.remove('opacity-0');
-          if (threatTitle) threatTitle.textContent = "⚠️ SUSPICIOUS CALL PATTERN";
-          if (threatDetail) threatDetail.textContent = "Acoustic or coercion patterns detected in conversation";
+          if (threatTitle) threatTitle.textContent = "⚠️ SUSPICIOUS COERCION PATTERN";
+          if (threatDetail) threatDetail.textContent = currentDetectedThreatCategory ? currentDetectedThreatCategory.alertDetail : "Acoustic or coercion indicators detected in conversation";
         }
         if (threatVectorsChips) {
           var chipsS = '';
@@ -4320,22 +4523,8 @@
         updateBankingPolicyUI(false, null);
 
       } else {
-        // 4. ACTIVE SAFE CALL (Risk 8% - 15%, Solidly Green)
-        resetSafeGreenUI();
-
-        if (scoreEl) {
-          scoreEl.textContent = overallRisk + '%';
-          scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-emerald)] leading-none';
-        }
-        if (labelEl) {
-          labelEl.textContent = "SAFE";
-          labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-emerald)] uppercase tracking-wider mt-1';
-        }
-        if (gaugePath) {
-          gaugePath.setAttribute('stroke-dasharray', overallRisk + ', 100');
-          gaugePath.style.stroke = '#10b981';
-        }
-
+        // SAFE HUMAN CALL (Risk < 45%)
+        resetSafeGreenUI(overallRisk, dynamicLlr);
         updateBankingPolicyUI(false, null);
       }
 
@@ -4772,7 +4961,9 @@
           var audioUrl = URL.createObjectURL(file);
           var audioObj = new Audio(audioUrl);
           window._currentUploadedAudio = audioObj;
-          audioObj.play().catch(function () { });
+          stopFallbackWaveform();
+          setupWebAudioAnalyser(audioObj);
+          audioObj.play().catch(function (e) { console.warn("Audio play prevented:", e); });
         } catch (audioErr) { }
 
         var winP = data.calibrated_prob !== undefined ? data.calibrated_prob : (data.window_p !== undefined ? data.window_p : (data.call_p || 0));
@@ -4959,11 +5150,13 @@
       renderTranscriptView();
 
       var fullText = liveTranscriptHistory.join(' ');
+      var kwResult = computeLiveKeywordRisk(fullText);
       var nlpResult = classifyTranscript(fullText);
-      liveScriptRisk = nlpResult.riskScore;
-      currentDetectedThreatCategory = nlpResult.topThreat;
 
-      updateScriptNlpUI(nlpResult.riskScore, nlpResult.topThreat);
+      liveScriptRisk = Math.max(nlpResult.riskScore, kwResult.riskScore);
+      currentDetectedThreatCategory = kwResult.topThreat || nlpResult.topThreat;
+
+      updateScriptNlpUI(liveScriptRisk, currentDetectedThreatCategory, kwResult.level !== 'CLEAN' ? kwResult.level : nlpResult.coercionIntent, kwResult.matchedKeywords);
       updateCombinedRiskUI();
       inp.value = '';
     }
