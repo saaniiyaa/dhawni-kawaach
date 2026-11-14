@@ -2882,8 +2882,12 @@
           liveAudioLevel = rmsEnergyPct;
 
           var overallRisk = Math.min(99, Math.max(0, Math.max(liveVoiceRisk, liveScriptRisk)));
+          var isBackendHold = (window._lastBackendTier === 'HOLD');
+          if (!emergencyActive && !isBackendHold && (!isVoiceActive || overallRisk < 35)) {
+            overallRisk = Math.min(15, overallRisk);
+          }
           var waveStroke = 'var(--accent-emerald)';
-          var isCrimson = emergencyActive || overallRisk >= 70;
+          var isCrimson = emergencyActive || isBackendHold || overallRisk >= 70;
           if (isCrimson) {
             waveStroke = 'var(--accent-crimson)';
           } else if (overallRisk >= 35) {
@@ -3241,8 +3245,31 @@
       }
     }
 
-    function resetSafeGreenUI() {
+    const DEFAULT_ASSET_SHIELD_HTML = '<div class="flex items-center gap-2.5">' +
+      '<span class="material-symbols-outlined text-[24px] text-[var(--accent-crimson)] animate-pulse">shield_lock</span>' +
+      '<div>' +
+      '<div class="font-extrabold text-[var(--accent-crimson)] text-[14px]">Asset Shield Active: Outbound UPI Frozen (₹50,000 Protected)</div>' +
+      '<div class="text-[12px] text-[var(--text-muted)]">Autonomous NPCI circuit breaker engaged. Enter verbal safe-word to unfreeze. (Demo Hint: <span class="font-mono font-bold text-[var(--accent-cyan)]">KAVACH-2026</span>)</div>' +
+      '</div>' +
+      '</div>' +
+      '<div class="flex items-center gap-2 w-full sm:w-auto">' +
+      '<input type="text" id="safeWordInput" placeholder="Safe-Word" class="px-3 py-1.5 rounded-lg bg-[var(--bg-card-sub)] border border-[var(--border-card)] text-white text-[13px] font-mono uppercase focus:outline-none focus:border-[var(--accent-cyan)] w-full sm:w-36" />' +
+      '<button type="button" id="btnVerifySafeWord" onclick="verifySafeWordChallenge()" class="px-3.5 py-1.5 rounded-lg bg-[var(--accent-emerald)] text-black font-extrabold text-[12.5px] hover:opacity-90 active:scale-95 transition-all whitespace-nowrap cursor-pointer shadow-md">' +
+      'Verify &amp; Unfreeze' +
+      '</button>' +
+      '</div>';
+    window.DEFAULT_ASSET_SHIELD_HTML = DEFAULT_ASSET_SHIELD_HTML;
+
+    function resetSafeGreenUI(targetScore) {
       emergencyActive = false;
+      manualBankingLock = false;
+      var scoreVal = targetScore !== undefined ? targetScore : (callActive ? 10 : 0);
+      liveVoiceRisk = scoreVal;
+      smoothedVoiceRisk = scoreVal;
+      liveScriptRisk = 0;
+      currentDetectedThreatCategory = null;
+      window._lastBackendTier = 'ALLOW';
+
       if (typeof stopEmergencySiren === 'function') stopEmergencySiren();
 
       // Ensure Biometric Override button is hidden
@@ -3265,10 +3292,34 @@
       var threatVectorsChips = document.getElementById('threatVectorsChips');
       if (threatVectorsChips) threatVectorsChips.innerHTML = '';
 
-      // 2. Reset risk gauge SVG ring stroke color back to emerald green (#10b981)
+      // 2. Reset risk gauge SVG ring stroke, number, and label
       var gaugePath = document.getElementById('svgGaugeCircle');
       if (gaugePath) {
+        gaugePath.setAttribute('stroke-dasharray', scoreVal + ', 100');
         gaugePath.style.stroke = '#10b981';
+      }
+      var scoreEl = document.getElementById('riskScoreNumber');
+      if (scoreEl) {
+        scoreEl.textContent = scoreVal + '%';
+        scoreEl.className = 'text-[50px] sm:text-[54px] font-mono font-extrabold text-[var(--accent-emerald)] leading-none';
+      }
+      var labelEl = document.getElementById('riskScoreLabel');
+      if (labelEl) {
+        labelEl.textContent = 'SAFE';
+        labelEl.className = 'text-[16px] sm:text-[17px] font-mono font-extrabold text-[var(--accent-emerald)] uppercase tracking-wider mt-1';
+      }
+
+      // Reset citizen upload status label so old file upload never lingers
+      var uploadLabel = document.getElementById('citizenUploadLabel');
+      if (uploadLabel) {
+        uploadLabel.textContent = 'Upload Audio';
+      }
+
+      // Hide Asset Shield container
+      var assetShieldContainer = document.getElementById('assetShieldContainer');
+      if (assetShieldContainer) {
+        assetShieldContainer.classList.add('hidden');
+        assetShieldContainer.style.display = 'none';
       }
 
       // Reset center waveform bars back to emerald green (#10b981)
@@ -3437,8 +3488,27 @@
       var pulseRing = document.getElementById('mainPulseRing');
       if (pulseRing) pulseRing.classList.remove('danger');
 
-      if (typeof updateBankingPolicyUI === 'function') {
-        updateBankingPolicyUI(false, null);
+      // Banking policy card and badge reset to emerald green
+      var bankingCard = document.getElementById('bankingDefenseCard');
+      var bankingPolicyText = document.getElementById('bankingPolicyText');
+      var bankingPolicyBadge = document.getElementById('bankingPolicyBadge');
+      var defenseStatusDot = document.getElementById('defenseStatusDot');
+      if (bankingCard) {
+        bankingCard.style.background = "var(--defense-safe-bg)";
+        bankingCard.style.borderColor = "var(--defense-safe-border)";
+        bankingCard.classList.remove('defense-active');
+      }
+      if (bankingPolicyBadge) {
+        bankingPolicyBadge.style.background = "var(--defense-safe-bg)";
+        bankingPolicyBadge.style.borderColor = "var(--defense-safe-border)";
+        bankingPolicyBadge.style.color = "var(--defense-safe-text)";
+        bankingPolicyBadge.classList.remove('animate-pulse');
+      }
+      if (defenseStatusDot) {
+        defenseStatusDot.className = "w-3 h-3 rounded-full bg-[var(--accent-emerald)] animate-pulse";
+      }
+      if (bankingPolicyText) {
+        bankingPolicyText.textContent = "AUTONOMOUS DEFENSE: ACTIVE & MONITORING";
       }
     }
     window.resetSafeGreenUI = resetSafeGreenUI;
@@ -3539,7 +3609,10 @@
         if (callerCard) callerCard.classList.remove('emergency-strobe');
         if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
         if (pulseRing) pulseRing.classList.remove('danger');
-        if (assetShieldContainer) assetShieldContainer.classList.add('hidden');
+        if (assetShieldContainer) {
+          assetShieldContainer.classList.add('hidden');
+          assetShieldContainer.style.display = 'none';
+        }
         if (bankingPolicyText) bankingPolicyText.textContent = "AUTONOMOUS DEFENSE: ACTIVE & MONITORING";
         if (bankingCard) {
           bankingCard.style.background = "var(--defense-safe-bg)";
@@ -3590,7 +3663,10 @@
         if (callerCard) callerCard.classList.remove('emergency-strobe');
         if (phoneChassis) phoneChassis.classList.remove('emergency-strobe');
         if (pulseRing) pulseRing.classList.remove('danger');
-        if (assetShieldContainer) assetShieldContainer.classList.add('hidden');
+        if (assetShieldContainer) {
+          assetShieldContainer.classList.add('hidden');
+          assetShieldContainer.style.display = 'none';
+        }
         if (bankingPolicyText) bankingPolicyText.textContent = "AUTONOMOUS DEFENSE: ACTIVE & MONITORING";
         if (bankingCard) {
           bankingCard.style.background = "var(--defense-safe-bg)";
@@ -3641,7 +3717,11 @@
         if (callerCard) callerCard.classList.add('emergency-strobe');
         if (phoneChassis) phoneChassis.classList.add('emergency-strobe');
         if (pulseRing) pulseRing.classList.add('danger');
-        if (assetShieldContainer) assetShieldContainer.classList.remove('hidden');
+        if (assetShieldContainer) {
+          assetShieldContainer.innerHTML = DEFAULT_ASSET_SHIELD_HTML;
+          assetShieldContainer.classList.remove('hidden');
+          assetShieldContainer.style.display = 'flex';
+        }
         if (bankingPolicyText) bankingPolicyText.textContent = "🚨 ASSET SHIELD: OUTBOUND TRANSACTIONS AUTONOMOUSLY FROZEN";
         if (bankingCard) {
           bankingCard.style.background = "var(--defense-threat-bg)";
@@ -3709,6 +3789,7 @@
         }
         if (assetShieldContainer) {
           assetShieldContainer.classList.remove('hidden');
+          assetShieldContainer.style.display = 'flex';
           assetShieldContainer.innerHTML = '<div class="flex items-center gap-2.5 text-[#10b981] font-bold py-1 w-full justify-center">' +
             '<span class="material-symbols-outlined text-[22px]">verified_user</span>' +
             '<span>Asset Shield Unfrozen: Outbound Limits Restored (Verbal Safe-Word Confirmed)</span>' +
@@ -4133,6 +4214,7 @@
       var dot = document.getElementById('defenseStatusDot');
       var card = document.getElementById('bankingDefenseCard');
       var btnBio = document.getElementById('btnBiometricOverride');
+      var assetShieldContainer = document.getElementById('assetShieldContainer');
 
       if (isFrozen) {
         if (card) {
@@ -4161,6 +4243,12 @@
         if (btnBio) {
           btnBio.classList.remove('hidden');
         }
+
+        if (assetShieldContainer) {
+          assetShieldContainer.innerHTML = DEFAULT_ASSET_SHIELD_HTML;
+          assetShieldContainer.classList.remove('hidden');
+          assetShieldContainer.style.display = 'flex';
+        }
       } else {
         if (card) {
           card.style.background = "var(--defense-safe-bg)";
@@ -4178,6 +4266,11 @@
 
         if (btnBio) {
           btnBio.classList.add('hidden');
+        }
+
+        if (assetShieldContainer) {
+          assetShieldContainer.classList.add('hidden');
+          assetShieldContainer.style.display = 'none';
         }
       }
     }
@@ -4815,8 +4908,17 @@
         liveSessionId = "sess_" + Date.now();
         window._lastBackendTier = 'ALLOW';
         window._lastStreamTranscript = '';
+        liveVoiceRisk = 10;
+        smoothedVoiceRisk = 10;
+        liveScriptRisk = 0;
+        currentDetectedThreatCategory = null;
+        manualBankingLock = false;
+        emergencyActive = false;
         fetch('/api/reset', { method: 'POST' }).catch(function () { });
-        resetSafeGreenUI();
+        resetSafeGreenUI(10);
+        if (typeof renderDashboardState === 'function') {
+          renderDashboardState({ state: "SAFE_ACTIVE", riskScore: 10 });
+        }
 
         // Pre-flight check: if capturing tab audio and no audio tracks exist
         if (this.sourceType === "tab") {
@@ -5065,39 +5167,48 @@
         liveAudioStream = null;
       }
 
-      // Activate Call State & UI if not already active
-      if (!callActive) {
-        callActive = true;
-        isManualSimulation = false;
-        liveTranscriptHistory = [];
-        activeInterimText = '';
-        liveVoiceRisk = 10;
-        smoothedVoiceRisk = 10;
-        liveSessionId = "sess_" + Math.random().toString(36).slice(2, 10);
-        liveChunkCounter = 0;
-        callStartTime = new Date();
-        startCallDuration();
+      // Activate Call State & UI cleanly
+      callActive = true;
+      isManualSimulation = false;
+      manualBankingLock = false;
+      emergencyActive = false;
+      liveTranscriptHistory = [];
+      activeInterimText = '';
+      liveVoiceRisk = 10;
+      smoothedVoiceRisk = 10;
+      liveScriptRisk = 0;
+      currentDetectedThreatCategory = null;
+      window._lastBackendTier = 'ALLOW';
+      window._lastStreamTranscript = '';
+      liveSessionId = "sess_" + Math.random().toString(36).slice(2, 10);
+      liveChunkCounter = 0;
+      callStartTime = new Date();
+      startCallDuration();
 
-        var rVis = document.getElementById('ringingVisual');
-        var aVis = document.getElementById('activeVisual');
-        var inAct = document.getElementById('incomingActions');
-        var actCtrl = document.getElementById('activeControls');
-        if (rVis) rVis.classList.add('opacity-0', 'hidden');
-        if (aVis) { aVis.classList.remove('hidden', 'opacity-0'); }
-        if (inAct) inAct.classList.add('opacity-0', 'hidden');
-        if (actCtrl) {
-          actCtrl.classList.remove('hidden');
-          actCtrl.classList.add('flex');
-          actCtrl.classList.remove('opacity-0');
-        }
-
-        updateSpeakerIdentityUI('human');
-        renderTranscriptView();
-        updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
-        updateScriptNlpUI(0, null);
-        updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
-        updateCombinedRiskUI();
+      var rVis = document.getElementById('ringingVisual');
+      var aVis = document.getElementById('activeVisual');
+      var inAct = document.getElementById('incomingActions');
+      var actCtrl = document.getElementById('activeControls');
+      if (rVis) rVis.classList.add('opacity-0', 'hidden');
+      if (aVis) { aVis.classList.remove('hidden', 'opacity-0'); }
+      if (inAct) inAct.classList.add('opacity-0', 'hidden');
+      if (actCtrl) {
+        actCtrl.classList.remove('hidden');
+        actCtrl.classList.add('flex');
+        actCtrl.classList.remove('opacity-0');
       }
+
+      fetch(API_BASE + '/api/reset', { method: 'POST' }).catch(function () { });
+      resetSafeGreenUI(10);
+      if (typeof renderDashboardState === 'function') {
+        renderDashboardState({ state: 'SAFE_ACTIVE', riskScore: 10 });
+      }
+
+      updateSpeakerIdentityUI('human');
+      renderTranscriptView();
+      updateVoiceAuthUI(10, 90, "AUTHENTIC HUMAN SPEECH");
+      updateScriptNlpUI(0, null);
+      updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
 
       var callBadge = document.getElementById('callStatusBadge');
       if (callBadge) {
@@ -5369,7 +5480,10 @@
       updateXaiMetrics(4.80, 0.08, -2.45, "CLEAN / BIOLOGICAL");
       window._lastBackendTier = 'ALLOW';
       window._lastStreamTranscript = '';
-      resetSafeGreenUI();
+      resetSafeGreenUI(0);
+      if (typeof renderDashboardState === 'function') {
+        renderDashboardState({ state: "IDLE", riskScore: 0 });
+      }
       updateCombinedRiskUI();
 
       if (typeof window.dkReset === 'function') {
@@ -9784,7 +9898,7 @@
     })();
   </script>
   <!-- ═════════ PACK 6 END ═════════ -->
-  <<<<<<< Updated upstream <!-- ═══════════════════════════════════════════════════════════════ ⚡ DHWANI KAVACH — PACK
+  <!-- ═══════════════════════════════════════════════════════════════ ⚡ DHWANI KAVACH — PACK
     7: PRO PACK • 🌐 LANGUAGE EXTENSION (16 aur strings × 11 languages) • 🧊 FINANCIAL COOLDOWN (simulated NPCI hook,
     disclosed) • ⚖️ LEGAL DOSSIER (Section 63 BSA template, print-to-PDF) Paste: last </body> ke UPAR, Pack 6 ke NEECHE.
     ═══════════════════════════════════════════════════════════════ -->
@@ -10442,7 +10556,6 @@
     <!-- ═════════ PACK 10 BADGE END ═════════ -->
 
     <!-- ═════════ END OF PACK 10 (badge included) ═════════ -->
-    =======
     <script>
       // Auto-close Left Navigation Drawer when opening any modal
       (function () {
@@ -10460,7 +10573,6 @@
         else { wireAutoClose(); }
       })();
     </script>
-    >>>>>>> Stashed changes
 
     <script>
       // ============================================================================
